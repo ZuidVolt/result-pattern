@@ -37,7 +37,6 @@ that failure paths are handled as diligently as success paths.
 *   **Ecosystem Inertia**: External Python libraries will continue to raise
     exceptions. Lifting must be performed at the integration boundaries.
 """
-# mypy: ignore-errors
 
 from __future__ import annotations
 
@@ -1227,17 +1226,17 @@ def partition[T_local, E_local](results: Iterable[Result[T_local, E_local]]) -> 
 
 
 @overload
-def safe[T, **P](  # pyright: ignore
-    exceptions: type[Exception] | tuple[type[Exception], ...],
-    func: Callable[P, Coroutine[Any, Any, T]],
-) -> Callable[P, Awaitable[Result[T, Exception]]]: ...
-
-
-@overload
 def safe[T, **P](
     exceptions: type[Exception] | tuple[type[Exception], ...],
     func: Callable[P, T],
 ) -> Callable[P, Result[T, Exception]]: ...  # pyright: ignore[reportOverlappingOverload]
+
+
+@overload
+def safe[T, **P](  # pyright: ignore
+    exceptions: type[Exception] | tuple[type[Exception], ...],
+    func: Callable[P, Coroutine[Any, Any, T]],
+) -> Callable[P, Awaitable[Result[T, Exception]]]: ...
 
 
 @overload

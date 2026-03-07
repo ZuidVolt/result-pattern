@@ -1,3 +1,4 @@
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Never, cast
 
 import pytest
@@ -316,3 +317,30 @@ def test_convenience_utils() -> None:
         return Ok(0)
 
     assert res_ok.or_else(recover) == Ok(10)
+
+
+def test_pattern_matching_type_narrowing() -> None:
+    """Verify that pattern matching correctly narrows types for static analysis.
+
+    This ensures that __match_args__ are correctly aligned with private
+    field names, allowing tools like basedpyright to narrow Ok(val) to the
+    success type and Err(err) to the error type.
+    """
+
+    class PatcherError(StrEnum):
+        PATH_MISSING = "path_missing"
+        OTHER = "other"
+
+    def check(result: Result[str, PatcherError]) -> str:
+        match result:
+            case Ok(msg):
+                return msg
+            case Err(PatcherError.PATH_MISSING):
+                return "missing"
+            case Err(PatcherError.OTHER):
+                return "other"
+            case Err(other_error):
+                return str(other_error)
+
+    assert check(Ok("success")) == "success"
+    assert check(Err(PatcherError.PATH_MISSING)) == "missing"

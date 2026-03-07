@@ -16,21 +16,20 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from src.result import (
+from result import (
     Do,
     DoAsync,
     Err,
     Ok,
     Result,
     UnwrapError,
-    _DoError,  # noqa: PLC2701
-    _raise_api_error,  # noqa: PLC2701
     do_async,
     do_notation,
     do_notation_async,
     is_err,
     safe,
 )
+from result.result import _DoError, _raise_api_error  # noqa: PLC2701
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -46,7 +45,7 @@ async def test_exhaustive_variant_behavior_property(val: int) -> None:
     res_err = Err(val)
 
     # 1. Functional Async (Direct calls for coverage)
-    async def dummy(x: Any) -> Any:  # noqa: RUF029, ANN401
+    async def dummy(x: Any) -> Any:  # noqa: RUF029
         return x
 
     assert await res_ok.map_async(dummy) == Ok(val)
@@ -118,7 +117,7 @@ async def test_exhaustive_mop_up() -> None:  # noqa: PLR0915
     assert res_err.unsafe.expect_err("msg") == "error"
 
     # 2. Async Short-circuits
-    async def dummy(x: Any) -> Any:  # noqa: RUF029, ANN401
+    async def dummy(x: Any) -> Any:  # noqa: RUF029
         return x
 
     assert await res_err.map_async(dummy) == Err("error")

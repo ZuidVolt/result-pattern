@@ -67,6 +67,7 @@ class UnwrapError(RuntimeError):
     Attributes:
         result: The original Result instance (Ok or Err) that caused the panic.
             Allowing for post-mortem inspection of the failed state.
+
     """
 
     def __init__(self, result: Result[Any, Any], message: str) -> None:
@@ -75,6 +76,7 @@ class UnwrapError(RuntimeError):
         Args:
             result: The instance that failed to unwrap.
             message: Descriptive error message explaining why the unwrap failed.
+
         """
         self.result = result
         super().__init__(message)
@@ -133,6 +135,7 @@ class _OkUnsafe[T_co]:
 
         Returns:
             The contained success value.
+
         """
         return self._owner._value  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
 
@@ -141,6 +144,7 @@ class _OkUnsafe[T_co]:
 
         Raises:
             UnwrapError: Always raised with a descriptive message.
+
         """
         msg = f"Called unwrap_err on an Ok value: {self._owner._value!r}"  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
         raise UnwrapError(self._owner, msg)
@@ -155,6 +159,7 @@ class _OkUnsafe[T_co]:
 
         Returns:
             The contained success value.
+
         """
         return self._owner._value  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
 
@@ -168,6 +173,7 @@ class _OkUnsafe[T_co]:
 
         Returns:
             The contained success value.
+
         """
         return self._owner._value  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
 
@@ -179,6 +185,7 @@ class _OkUnsafe[T_co]:
 
         Raises:
             UnwrapError: Always raised.
+
         """
         msg_final = f"{msg}: {self._owner._value!r}"  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
         raise UnwrapError(self._owner, msg_final)
@@ -195,6 +202,7 @@ class _ErrUnsafe[E_co]:
 
         Raises:
             UnwrapError: Always raised, containing the error state.
+
         """
         msg = f"Called unwrap on an Err value: {self._owner._error!r}"  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
         exc = UnwrapError(self._owner, msg)
@@ -207,6 +215,7 @@ class _ErrUnsafe[E_co]:
 
         Returns:
             The contained error state.
+
         """
         return self._owner._error  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
 
@@ -218,6 +227,7 @@ class _ErrUnsafe[E_co]:
 
         Raises:
             UnwrapError: Always raised.
+
         """
         msg_final = f"{msg}: {self._owner._error!r}"  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
         exc = UnwrapError(self._owner, msg_final)
@@ -233,6 +243,7 @@ class _ErrUnsafe[E_co]:
 
         Raises:
             Exception: An instance of `e` initialized with the error state.
+
         """
         raise e(self._owner._error)  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
 
@@ -246,6 +257,7 @@ class _ErrUnsafe[E_co]:
 
         Returns:
             The contained error state.
+
         """
         return self._owner._error  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
 
@@ -266,6 +278,7 @@ class Ok[T_co]:
         ...     case Ok(v):
         ...         print(f"Success: {v}")
         Success: 200
+
     """
 
     _value: T_co
@@ -276,6 +289,7 @@ class Ok[T_co]:
 
         Args:
             value: The successful result to wrap.
+
         """
         object.__setattr__(self, "_value", value)
 
@@ -295,6 +309,7 @@ class Ok[T_co]:
         Examples:
             >>> Ok(10).unsafe.unwrap()
             10
+
         """
         return _OkUnsafe(self)
 
@@ -306,6 +321,7 @@ class Ok[T_co]:
 
         Returns:
             Always True for Ok instances.
+
         """
         return True
 
@@ -314,6 +330,7 @@ class Ok[T_co]:
 
         Returns:
             Always False for Ok instances.
+
         """
         return False
 
@@ -329,6 +346,7 @@ class Ok[T_co]:
         Examples:
             >>> Ok(10).is_ok_and(lambda x: x > 5)
             True
+
         """
         return predicate(self._value)
 
@@ -342,6 +360,7 @@ class Ok[T_co]:
 
         Returns:
             Always False.
+
         """
         return False
 
@@ -411,6 +430,7 @@ class Ok[T_co]:
         Examples:
             >>> Ok(10).map(lambda x: x * 2)
             Ok(20)
+
         """
         return Ok(func(self._value))
 
@@ -428,6 +448,7 @@ class Ok[T_co]:
             ...     return x * 2
             >>> await Ok(10).map_async(double)
             Ok(20)
+
         """
         return Ok(await func(self._value))
 
@@ -444,6 +465,7 @@ class Ok[T_co]:
         Examples:
             >>> Ok(10).map_or(0, lambda x: x * 2)
             20
+
         """
         return func(self._value)
 
@@ -460,6 +482,7 @@ class Ok[T_co]:
         Examples:
             >>> Ok(10).map_or_else(lambda: 0, lambda x: x * 2)
             20
+
         """
         return func(self._value)
 
@@ -476,6 +499,7 @@ class Ok[T_co]:
         Examples:
             >>> Ok(10).replace("done")
             Ok('done')
+
         """
         return Ok(value)
 
@@ -496,6 +520,7 @@ class Ok[T_co]:
             >>> Ok(10).tap(print).map(lambda x: x + 1)
             10
             Ok(11)
+
         """
         func(self._value)
         return self
@@ -515,6 +540,7 @@ class Ok[T_co]:
             >>> await Ok(10).tap_async(log)
             Logging: 10
             Ok(10)
+
         """
         await func(self._value)
         return self
@@ -537,6 +563,7 @@ class Ok[T_co]:
             ...     return Ok(n) if n > 0 else Err("too small")
             >>> Ok(10).and_then(validate)
             Ok(10)
+
         """
         return func(self._value)
 
@@ -556,6 +583,7 @@ class Ok[T_co]:
             ...     return Ok(n) if n > 0 else Err("low")
             >>> await Ok(10).and_then_async(check)
             Ok(10)
+
         """
         return await func(self._value)
 
@@ -571,6 +599,7 @@ class Ok[T_co]:
         Examples:
             >>> Ok(10).or_else(lambda e: Ok(0))
             Ok(10)
+
         """
         return self
 
@@ -588,6 +617,7 @@ class Ok[T_co]:
             Ok(10)
             >>> Ok(Err("fail")).flatten()
             Err('fail')
+
         """
         val = self._value  # pyright: ignore[reportUnknownMemberType]
         if isinstance(val, Ok | Err):
@@ -609,6 +639,7 @@ class Ok[T_co]:
             Ok(10)
             >>> Ok(3).filter(lambda x: x > 5, "too small")
             Err('too small')
+
         """
         if predicate(self._value):
             return self
@@ -628,6 +659,7 @@ class Ok[T_co]:
             >>> res = Ok(10)
             >>> res.match(on_ok=lambda x: x * 2, on_err=lambda e: 0)
             20
+
         """
         return on_ok(self._value)
 
@@ -643,6 +675,7 @@ class Ok[T_co]:
         Examples:
             >>> Ok(10).unwrap_or(0)
             10
+
         """
         return self._value
 
@@ -658,6 +691,7 @@ class Ok[T_co]:
         Examples:
             >>> Ok(10).unwrap_or_else(lambda e: 0)
             10
+
         """
         return self._value
 
@@ -670,6 +704,7 @@ class Ok[T_co]:
         Examples:
             >>> Ok(10).ok()
             10
+
         """
         return self._value
 
@@ -682,6 +717,7 @@ class Ok[T_co]:
         Examples:
             >>> Ok(10).err()
             None
+
         """
         return None
 
@@ -699,6 +735,7 @@ class Err[E_co]:
         ...     case Err(e):
         ...         print(f"Error: {e}")
         Error: not found
+
     """
 
     _error: E_co
@@ -709,6 +746,7 @@ class Err[E_co]:
 
         Args:
             error: The error state or exception to wrap.
+
         """
         object.__setattr__(self, "_error", error)
 
@@ -729,6 +767,7 @@ class Err[E_co]:
         Examples:
             >>> Err("fail").unsafe.unwrap_err()
             'fail'
+
         """
         return _ErrUnsafe(self)
 
@@ -740,6 +779,7 @@ class Err[E_co]:
 
         Returns:
             Always False for Err instances.
+
         """
         return False
 
@@ -748,6 +788,7 @@ class Err[E_co]:
 
         Returns:
             Always True for Err instances.
+
         """
         return True
 
@@ -761,6 +802,7 @@ class Err[E_co]:
 
         Returns:
             Always False.
+
         """
         return False
 
@@ -776,6 +818,7 @@ class Err[E_co]:
         Examples:
             >>> Err(404).is_err_and(lambda e: e == 404)
             True
+
         """
         return predicate(self._error)
 
@@ -845,6 +888,7 @@ class Err[E_co]:
 
         Returns:
             The current instance unchanged.
+
         """
         return self
 
@@ -861,6 +905,7 @@ class Err[E_co]:
         Examples:
             >>> Err("fail").map_or(0, lambda x: x * 2)
             0
+
         """
         return default
 
@@ -877,6 +922,7 @@ class Err[E_co]:
         Examples:
             >>> Err("fail").map_or_else(lambda: 0, lambda x: x * 2)
             0
+
         """
         return default_func()
 
@@ -892,6 +938,7 @@ class Err[E_co]:
         Examples:
             >>> Err(404).map_err(lambda code: f"Code: {code}")
             Err('Code: 404')
+
         """
         return Err(func(self._error))
 
@@ -911,6 +958,7 @@ class Err[E_co]:
         Examples:
             >>> Err("timeout").replace_err("network error")
             Err('network error')
+
         """
         return Err(error)
 
@@ -926,6 +974,7 @@ class Err[E_co]:
 
         Returns:
             The current instance unchanged.
+
         """
         return self
 
@@ -942,6 +991,7 @@ class Err[E_co]:
             >>> Err("db fail").tap_err(print)
             db fail
             Err('db fail')
+
         """
         func(self._error)
         return self
@@ -958,6 +1008,7 @@ class Err[E_co]:
 
         Returns:
             The current instance unchanged.
+
         """
         return self
 
@@ -973,6 +1024,7 @@ class Err[E_co]:
         Examples:
             >>> Err("file missing").or_else(lambda _: Ok("default content"))
             Ok('default content')
+
         """
         return func(self._error)
 
@@ -998,6 +1050,7 @@ class Err[E_co]:
             >>> res = Err("fail")
             >>> res.match(on_ok=lambda x: x * 2, on_err=lambda e: 0)
             0
+
         """
         return on_err(self._error)
 
@@ -1013,6 +1066,7 @@ class Err[E_co]:
         Examples:
             >>> Err("fail").unwrap_or(42)
             42
+
         """
         return default
 
@@ -1028,6 +1082,7 @@ class Err[E_co]:
         Examples:
             >>> Err("fail").unwrap_or_else(lambda e: f"recovered from {e}")
             'recovered from fail'
+
         """
         return func(self._error)
 
@@ -1037,6 +1092,7 @@ class Err[E_co]:
         Examples:
             >>> Err("fail").ok()
             None
+
         """
         return None
 
@@ -1049,6 +1105,7 @@ class Err[E_co]:
         Examples:
             >>> Err("fail").err()
             'fail'
+
         """
         return self._error
 
@@ -1075,6 +1132,7 @@ def is_ok[T_local, E_local](result: Result[T_local, E_local]) -> TypeIs[Ok[T_loc
         >>> if is_ok(res):
         ...     # res is now typed as Ok[int]
         ...     print(res._value)  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+
     """
     return isinstance(result, Ok)
 
@@ -1087,6 +1145,7 @@ def is_err[T_local, E_local](result: Result[T_local, E_local]) -> TypeIs[Err[E_l
         >>> if is_err(res):
         ...     # res is now typed as Err[str]
         ...     print(res._error)  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+
     """
     return isinstance(result, Err)
 
@@ -1106,6 +1165,7 @@ def from_optional[T_co, E_co](value: T_co | None, error: E_co) -> Result[T_co, E
         Ok(42)
         >>> from_optional(None, "fail")
         Err('fail')
+
     """
     if value is None:
         return Err(error)
@@ -1129,6 +1189,7 @@ def combine[T_local, E_local](results: Iterable[Result[T_local, E_local]]) -> Re
         Ok([1, 2])
         >>> combine([Ok(1), Err("fail")])
         Err('fail')
+
     """
     values: list[T_local] = []
     for res in results:
@@ -1153,6 +1214,7 @@ def partition[T_local, E_local](results: Iterable[Result[T_local, E_local]]) -> 
     Examples:
         >>> partition([Ok(1), Err("a"), Ok(2)])
         ([1, 2], ['a'])
+
     """
     oks: list[T_local] = []
     errs: list[E_local] = []
@@ -1211,6 +1273,7 @@ def safe[T, **P](
 
         >>> safe(ValueError, int, "10")
         Ok(10)
+
     """
 
     def decorator(f: Callable[P, T]) -> Callable[P, Any]:
@@ -1259,6 +1322,7 @@ def do[T_co, E_co](gen: Generator[Result[T_co, E_co], Any, T_co]) -> Result[T_co
     Examples:
         >>> do(Ok(x + y) for x in Ok(1) for y in Ok(2))
         Ok(3)
+
     """
     try:
         return next(gen)
@@ -1285,6 +1349,7 @@ async def do_async[T_co, E_co](gen: AsyncGenerator[Result[T_co, E_co], Any]) -> 
         ...     yield Ok(1)
         >>> await do_async(Ok(x + 2) async for x in async_gen())
         Ok(3)
+
     """
     try:
         return await anext(gen)
@@ -1383,6 +1448,7 @@ def do_notation[T_local, E_local, **P](
         ...     return val
         >>> risky("not a number")
         Err(ValueError(...))
+
     """
     if callable(arg) and not isinstance(arg, type | tuple):
         return _make_do_wrapper(arg, None)
@@ -1483,9 +1549,10 @@ def do_notation_async[T_local, E_local, **P](
         ... async def get_data(user_id):
         ...     user = yield await fetch_user(user_id)  # fetch_user returns Result
         ...     yield Ok(user.name)
+
     """
 
-    def decorator(func: Callable[P, DoAsync[T_local, E_local]]) -> Any:  # noqa: ANN401
+    def decorator(func: Callable[P, DoAsync[T_local, E_local]]) -> Any:
         return _make_async_wrapper(func, cast("Any", catch_final))
 
     if callable(arg) and not isinstance(arg, type | tuple):

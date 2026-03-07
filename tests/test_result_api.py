@@ -4,7 +4,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from src.result import (
+from result import (
     Do,
     DoAsync,
     Err,

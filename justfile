@@ -19,7 +19,7 @@ mypy-check:
 ty-check:
     ty check {{ PYSOURCE }}
 
-check: format ruff-check ty-check basedpyright-check
+check: format ruff-check ty-check basedpyright-check mypy-check
 
 test:
     pytest -v tests/

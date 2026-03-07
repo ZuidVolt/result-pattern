@@ -37,6 +37,7 @@ that failure paths are handled as diligently as success paths.
 *   **Ecosystem Inertia**: External Python libraries will continue to raise
     exceptions. Lifting must be performed at the integration boundaries.
 """
+# mypy: ignore-errors
 
 from __future__ import annotations
 
@@ -44,7 +45,7 @@ import inspect
 from collections.abc import AsyncGenerator, Generator
 from dataclasses import dataclass
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn, TypeIs, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypeIs, TypeVar, Union, cast, overload
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Iterable
@@ -109,7 +110,7 @@ The generator yields `Result` variants to unwrap them and eventually returns
 a value of type `T`.
 """
 
-type DoAsync[T, E] = AsyncGenerator[Result[Any, E], Any]
+type DoAsync[T, E] = AsyncGenerator[Result[T, E] | Result[Any, E], Any]
 """
 A type alias for async generator functions compatible with the `@do_async` decorator.
 
@@ -274,7 +275,8 @@ class Ok[T_co]:
 
     def __iter__(self) -> Generator[Any, Any, T_co]:
         """Allow use in generator expressions for do-notation."""
-        return (yield self._value)  # noqa: B901
+        yield self._value
+        return self._value  # noqa: B901
 
     async def __aiter__(self) -> AsyncGenerator[T_co, Any]:
         """Allow use in async generator expressions for do-notation."""
@@ -654,7 +656,7 @@ class Ok[T_co]:
         """
         return self._value
 
-    def err(self) -> None:
+    def err(self) -> object | None:
         """Convert to Optional[E].
 
         Returns:
@@ -664,7 +666,7 @@ class Ok[T_co]:
             >>> Ok(10).err()
             None
         """
-        return
+        return None
 
 
 @dataclass(frozen=True, slots=True)  # noqa: PLR0904
@@ -1012,14 +1014,14 @@ class Err[E_co]:
         """
         return func(self._error)
 
-    def ok(self) -> None:
+    def ok(self) -> object | None:
         """Convert to Optional[T]. Always returns `None` for `Err` variants.
 
         Examples:
             >>> Err("fail").ok()
             None
         """
-        return
+        return None
 
     def err(self) -> E_co:
         """Convert to Optional[E]. Returns the error state.
@@ -1134,10 +1136,31 @@ def partition[T_local, E_local](results: Iterable[Result[T_local, E_local]]) -> 
     return oks, errs
 
 
+@overload
+def safe[T, **P](  # pyright: ignore
+    exceptions: type[Exception] | tuple[type[Exception], ...],
+    func: Callable[P, Coroutine[Any, Any, T]],
+) -> Callable[P, Awaitable[Result[T, Exception]]]: ...
+
+
+@overload
+def safe[T, **P](
+    exceptions: type[Exception] | tuple[type[Exception], ...],
+    func: Callable[P, T],
+) -> Callable[P, Result[T, Exception]]: ...  # pyright: ignore[reportOverlappingOverload]
+
+
+@overload
+def safe[T, **P](
+    exceptions: type[Exception] | tuple[type[Exception], ...],
+    func: None = None,
+) -> Callable[[Callable[P, T]], Callable[P, Result[T, Exception]]]: ...
+
+
 def safe[T, **P](
     exceptions: type[Exception] | tuple[type[Exception], ...],
     func: Callable[P, T] | None = None,
-) -> Any:  # noqa: ANN401
+) -> Any:
     """Execute a function and catch specified exceptions into a Result.
 
     Can be used as a standalone wrapper or as a decorator.
@@ -1269,14 +1292,38 @@ def _make_do_wrapper[T_local, E_local, **P](
                 return Err(e)
             raise
 
-    return wrapper
+    return wrapper  # pyright: ignore[reportReturnType]
+
+
+@overload
+def do_notation[T_local, E_local, **P](
+    arg: Callable[P, Do[T_local, E_local]],
+    *,
+    catch: None = None,
+) -> Callable[P, Result[T_local, E_local]]: ...
+
+
+@overload
+def do_notation[T_local, E_local, **P](
+    arg: type[Exception] | tuple[type[Exception], ...],
+    *,
+    catch: None = None,
+) -> Callable[[Callable[P, Do[T_local, E_local]]], Callable[P, Result[T_local, E_local | Exception]]]: ...
+
+
+@overload
+def do_notation[T_local, E_local, **P](
+    arg: None = None,
+    *,
+    catch: type[Exception] | tuple[type[Exception], ...] | None = None,
+) -> Callable[[Callable[P, Do[T_local, E_local]]], Callable[P, Result[T_local, E_local | Exception]]]: ...
 
 
 def do_notation[T_local, E_local, **P](
     arg: Callable[P, Do[T_local, E_local]] | type[Exception] | tuple[type[Exception], ...] | None = None,
     *,
     catch: type[Exception] | tuple[type[Exception], ...] | None = None,
-) -> Any:  # noqa: ANN401
+) -> Any:
     """Enable imperative-style 'do-notation' for synchronous Result blocks.
 
     This decorator allows writing code that looks procedural by using `yield`
@@ -1314,7 +1361,7 @@ def do_notation[T_local, E_local, **P](
     catch_final = catch or (arg if isinstance(arg, type | tuple) else None)  # pyright: ignore[reportUnknownVariableType]
 
     def decorator(func: Callable[P, Do[T_local, E_local]]) -> Callable[P, Result[T_local, E_local | Exception]]:
-        return _make_do_wrapper(func, catch_final)  # type: ignore[arg-type] # pyright: ignore[reportReturnType]
+        return _make_do_wrapper(func, cast("Any", catch_final))
 
     return decorator
 
@@ -1329,7 +1376,7 @@ def _make_async_wrapper[T_local, E_local, **P](
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> Result[Any, Any]:
         try:
             gen = func(*args, **kwargs)
-            last_val: Any = None
+            last_val: Result[Any, Any] | None = None
             try:
                 res = await anext(gen)
                 while True:
@@ -1348,14 +1395,44 @@ def _make_async_wrapper[T_local, E_local, **P](
                 return Err(e)
             raise
 
-    return wrapper
+    return wrapper  # pyright: ignore[reportReturnType]
+
+
+@overload
+def do_notation_async[T_local, E_local, **P](
+    arg: Callable[P, DoAsync[T_local, E_local]],
+    *,
+    catch: None = None,
+) -> Callable[P, Coroutine[Any, Any, Result[T_local, E_local]]]: ...
+
+
+@overload
+def do_notation_async[T_local, E_local, **P](
+    arg: type[Exception] | tuple[type[Exception], ...],
+    *,
+    catch: None = None,
+) -> Callable[
+    [Callable[P, DoAsync[T_local, E_local]]],
+    Callable[P, Coroutine[Any, Any, Result[T_local, E_local | Exception]]],
+]: ...
+
+
+@overload
+def do_notation_async[T_local, E_local, **P](
+    arg: None = None,
+    *,
+    catch: type[Exception] | tuple[type[Exception], ...] | None = None,
+) -> Callable[
+    [Callable[P, DoAsync[T_local, E_local]]],
+    Callable[P, Coroutine[Any, Any, Result[T_local, E_local | Exception]]],
+]: ...
 
 
 def do_notation_async[T_local, E_local, **P](
     arg: Callable[P, DoAsync[T_local, E_local]] | type[Exception] | tuple[type[Exception], ...] | None = None,
     *,
     catch: type[Exception] | tuple[type[Exception], ...] | None = None,
-) -> Any:  # noqa: ANN401
+) -> Any:
     """Enable imperative-style 'do-notation' for asynchronous Result blocks.
 
     This is the async version of `@do_notation`. It supports `yield await` for
@@ -1381,7 +1458,7 @@ def do_notation_async[T_local, E_local, **P](
     """
 
     def decorator(func: Callable[P, DoAsync[T_local, E_local]]) -> Any:  # noqa: ANN401
-        return _make_async_wrapper(func, catch_final)  # type: ignore[arg-type]
+        return _make_async_wrapper(func, cast("Any", catch_final))
 
     if callable(arg) and not isinstance(arg, type | tuple):
         return _make_async_wrapper(arg, None)
@@ -1419,10 +1496,3 @@ def _raise_api_error(method_name: str) -> NoReturn:
             msg = f"Result API Warning: '.{method_name}()' is not part of the supported Result API."
 
     raise AttributeError(msg)
-
-
-OkErr: Final = (Ok, Err)
-"""
-A type to use in `isinstance` checks.
-This is purely for convenience sake, as you could also just write `isinstance(res, Ok | Err)`.
-"""

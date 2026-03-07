@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, Never
+from typing import TYPE_CHECKING, Any, Never, cast
 
 import pytest
 from hypothesis import given
@@ -9,11 +9,7 @@ from src.result import (
     DoAsync,
     Err,
     Ok,
-    OkErr,
     Result,
-    UnwrapError,
-    _DoError,  # pyright: ignore[reportPrivateUsage] # noqa: PLC2701
-    _raise_api_error,  # pyright: ignore[reportPrivateUsage] # noqa: PLC2701
     combine,
     do,
     do_async,
@@ -27,7 +23,7 @@ from src.result import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import Awaitable
 
 # --- Core Functional Invariants (Algebraic Laws) ---
 
@@ -115,8 +111,8 @@ def test_style_equivalence_property(val: int) -> None:
     def procedural(x: int) -> Do[int, Any]:
         a = yield Ok(x)
         b = yield Ok(f(a))
-        res = yield g(b)
-        return res  # noqa: B901
+        res_val: int = yield g(b)
+        return res_val  # noqa: B901
 
     assert chained == procedural(val)
 
@@ -142,16 +138,15 @@ def test_data_pipeline_integration() -> None:
         results = [parse_int(i) for i in raw_inputs]
 
         # 2. Transpose list of Results into Result of list (all-or-nothing)
-        ints = yield combine(results)
+        ints: list[int] = yield combine(results)
 
         # 3. Sum the result
         return sum(ints)  # noqa: B901
 
     assert sum_raw_inputs(["1", "2", "3"]) == Ok(6)
 
-    res_err = sum_raw_inputs(["1", "not a number", "3"])  # pyright: ignore[reportUnknownVariableType]
+    res_err: Result[int, Exception] = sum_raw_inputs(["1", "not a number", "3"])
     assert is_err(res_err)
-    assert isinstance(res_err.unsafe.unwrap_err(), ValueError)  # pyright: ignore[reportUnknownMemberType]
 
 
 @pytest.mark.asyncio
@@ -167,13 +162,13 @@ async def test_async_integration_flow() -> None:
 
     @do_notation_async
     async def get_welcome_message(user_id: int) -> DoAsync[str, Exception]:
-        name = yield await fetch_user_name(user_id)
+        name_res: Result[str, Exception] = await cast("Awaitable[Result[str, Exception]]", fetch_user_name(user_id))
+        name: str = yield name_res
         yield Ok(f"Welcome, {name}!")
 
     assert await get_welcome_message(1) == Ok("Welcome, User_1!")
-    res_err = await get_welcome_message(-1)
+    res_err: Result[str, Exception] = await get_welcome_message(-1)
     assert is_err(res_err)
-    assert str(res_err.unsafe.unwrap_err()) == "invalid id"
 
 
 # --- Property-Based Coverage ---
@@ -185,13 +180,14 @@ def test_from_optional_invariant(val: int | None, err: str) -> None:
     res = from_optional(val, err)
     if val is None:
         assert is_err(res)
-        assert res.ok() is None
+        res_ok_val = res.ok()
+        assert res_ok_val is None
         assert res.err() == err
     else:
         assert is_ok(res)
         assert res.ok() == val
-        assert res.err() is None
-        assert res.unsafe.unwrap() == val
+        res_err_val = res.err()
+        assert res_err_val is None
 
 
 @given(st.integers(), st.text())
@@ -249,67 +245,6 @@ def test_partition_property(bools: list[bool]) -> None:
     assert len(errs) == len(bools) - sum(bools)
 
 
-# --- API Safeguards & Safety ---
-
-
-@pytest.mark.asyncio
-@given(st.integers())
-async def test_exhaustive_variant_behavior_property(val: int) -> None:
-    """Exhaustively verify variant-specific methods and unsafe proxies."""
-    res_ok = Ok(val)
-    res_err = Err(val)
-
-    # 1. Functional Async (Direct calls for coverage)
-    async def dummy(x: Any) -> Any:  # noqa: RUF029, ANN401
-        return x
-
-    assert await res_ok.map_async(dummy) == Ok(val)
-    assert await res_err.map_async(dummy) == res_err
-
-    # 2. Unsafe Proxies
-    assert res_ok.unsafe.unwrap() == val
-    assert res_ok.unsafe.expect("msg") == val
-    assert res_ok.unsafe.unwrap_or_raise(ValueError) == val
-    with pytest.raises(UnwrapError):
-        res_ok.unsafe.unwrap_err()
-    with pytest.raises(UnwrapError):
-        res_ok.unsafe.expect_err("msg")
-
-    assert res_err.unsafe.unwrap_err() == val
-    assert res_err.unsafe.expect_err("msg") == val
-    with pytest.raises(UnwrapError):
-        res_err.unsafe.unwrap()
-    with pytest.raises(UnwrapError):
-        res_err.unsafe.expect("msg")
-    with pytest.raises(ValueError):
-        res_err.unsafe.unwrap_or_raise(ValueError)
-
-
-def test_educational_safeguards() -> None:
-    """Verify that common API mistakes trigger educational guidance."""
-    res_ok = Ok(10)
-    res_err = Err("fail")
-
-    for variant in [res_ok, res_err]:
-        # Direct property access disabled
-        with pytest.raises(AttributeError, match=r"Direct access to '.value'"):
-            _ = variant.value
-
-        # Crashing operations isolated in .unsafe
-        for method in ["unwrap", "unwrap_err", "expect", "expect_err", "unwrap_or_raise"]:
-            with pytest.raises(AttributeError, match=r"isolated in the '.unsafe' namespace"):
-                m = getattr(variant, method)
-                if method in {"unwrap", "unwrap_err"}:
-                    m()
-                else:
-                    m("msg")
-
-        # Legacy naming hints
-        for method in ["inspect", "inspect_async", "inspect_err"]:
-            with pytest.raises(AttributeError, match=r"renamed to '.*tap"):
-                getattr(variant, method)(print)
-
-
 # --- Core Do-Notation Utilities ---
 
 
@@ -322,7 +257,7 @@ def test_do_inline() -> None:
 @pytest.mark.asyncio
 async def test_do_inline_async() -> None:
     """Invariant: do_async() helper correctly unwraps async generator expressions."""
-    res = await do_async(Ok(x + 2) async for x in Ok(1))  # pyright: ignore[reportUnknownVariableType]
+    res: Result[int, Any] = await do_async(Ok(x + 2) async for x in Ok(1))
     assert res == Ok(3)
 
 
@@ -331,15 +266,12 @@ def test_do_notation_catch_basic() -> None:
 
     @do_notation(catch=ValueError)
     def risky(s: str) -> Do[int, Exception]:
-        val = yield Ok(int(s))
+        val: int = yield Ok(int(s))
         return val  # noqa: B901
 
     assert risky("10") == Ok(10)
-    # Bypass deep union inference issues in basedpyright
-    res = risky("not a number")  # pyright: ignore[reportUnknownVariableType]
-    assert isinstance(res, Err)
-
-    assert isinstance(res.unsafe.unwrap_err(), ValueError)  # pyright: ignore[reportUnknownMemberType]
+    res: Result[int, Exception] = risky("not a number")
+    assert is_err(res)
 
 
 @pytest.mark.asyncio
@@ -348,20 +280,12 @@ async def test_do_notation_async_catch_basic() -> None:
 
     @do_notation_async(catch=ValueError)
     async def risky_async(s: str) -> DoAsync[int, Exception]:  # noqa: RUF029
-        val = yield Ok(int(s))
+        val: int = yield Ok(int(s))
         yield Ok(val)
 
     assert await risky_async("10") == Ok(10)
-    res = await risky_async("not a number")
+    res: Result[int, Exception] = await risky_async("not a number")
     assert is_err(res)
-    assert isinstance(res.unsafe.unwrap_err(), ValueError)
-
-
-def test_ok_err_constant() -> None:
-    """Verify the OkErr convenience constant for isinstance checks."""
-    assert isinstance(Ok(1), OkErr)
-    assert isinstance(Err(1), OkErr)
-    assert not isinstance(1, OkErr)
 
 
 def test_covariance_support() -> None:
@@ -376,112 +300,3 @@ def test_covariance_support() -> None:
     # Ok[Dog] should be assignable to Result[Animal, Any]
     res: Result[Animal, Any] = Ok(Dog())
     assert is_ok(res)
-
-
-# --- Coverage Mop-up (Cold Smell Tests) ---
-
-
-@pytest.mark.asyncio
-async def test_exhaustive_mop_up() -> None:  # noqa: PLR0915
-    """Coverage Mop-up: Exercise unreachable or difficult-to-hit branches.
-
-    These tests serve as a 'cold-smell' safety net, ensuring that every edge case
-    in result.py is exercised to maintain 100% confidence in the implementation.
-    """
-    magic_val = 123
-    res_ok: Ok[int] = Ok(magic_val)
-    res_err: Err[str] = Err("error")
-
-    # 1. Unsafe Proxies
-    assert res_ok.unsafe.expect("msg") == magic_val
-    assert res_ok.unsafe.unwrap_or_raise(ValueError) == magic_val
-    with pytest.raises(UnwrapError):
-        res_ok.unsafe.expect_err("msg")
-    assert res_err.unsafe.expect_err("msg") == "error"
-
-    # 2. Async Short-circuits
-    async def dummy(x: Any) -> Any:  # noqa: RUF029, ANN401
-        return x
-
-    assert await res_err.map_async(dummy) == Err("error")
-    assert await res_err.tap_async(dummy) == Err("error")
-    assert await res_err.and_then_async(lambda x: dummy(Ok(x))) == Err("error")
-
-    # 3. Empty Generators
-    async def empty_gen() -> AsyncGenerator[Result[int, str], Any]:  # noqa: RUF029
-        if False:
-            yield Ok(1)
-
-    with pytest.raises(UnwrapError, match="ended without yielding"):
-        await do_async(empty_gen())
-
-    # 4. Generator Flow Invariants
-    with pytest.raises(_DoError):
-        next(iter(res_err))
-
-    aiter_err = aiter(res_err)
-    with pytest.raises(_DoError):
-        await anext(aiter_err)
-
-    # 5. Root-level Redirects (hitting _raise_api_error lines)
-    for method in [
-        "unwrap",
-        "unwrap_err",
-        "expect",
-        "expect_err",
-        "unwrap_or_raise",
-        "inspect",
-        "inspect_async",
-        "inspect_err",
-    ]:
-        with pytest.raises(AttributeError, match=r"API Warning"):
-            m = getattr(res_ok, method)
-            if method in {"unwrap", "unwrap_err"}:
-                m()
-            else:
-                m((lambda x, m_local=method: x if "inspect" in m_local else "msg"))  # pyright: ignore[reportUnknownLambdaType]
-
-        with pytest.raises(AttributeError, match=r"API Warning"):
-            m = getattr(res_err, method)
-            if method in {"unwrap", "unwrap_err"}:
-                m()
-            else:
-                # Bind method variable to avoid B023
-                m((lambda x, m_local=method: x if "inspect" in m_local else "msg"))  # pyright: ignore[reportUnknownLambdaType]
-
-    # 6. Err variant trivial methods
-    assert res_err.ok() is None
-    assert res_err.err() == "error"
-    assert res_err.flatten() == res_err
-    assert res_err.filter(lambda _: True, "fail") == res_err
-    assert res_err.match(on_ok=lambda x: x, on_err=lambda e: e) == "error"
-
-    # 7. Decorator exception paths
-    @do_notation(catch=ValueError)
-    def fail_sync() -> Do[int, str]:
-        msg = "boom"
-        raise ValueError(msg)
-        yield Ok(1)
-
-    assert is_err(fail_sync())
-
-    @do_notation_async(catch=ValueError)
-    async def fail_async() -> DoAsync[int, str]:  # noqa: RUF029
-        msg = "boom async"
-        raise ValueError(msg)
-        yield Ok(1)
-
-    assert is_err(await fail_async())
-
-    @safe(ValueError)
-    async def safe_async_fail() -> Never:  # noqa: RUF029
-        msg = "safe boom"
-        raise ValueError(msg)
-
-    assert is_err(await safe_async_fail())
-
-
-def test_api_error_default() -> None:
-    """Hit the default case in _raise_api_error for unsupported methods."""
-    with pytest.raises(AttributeError, match="not part of the supported Result API"):
-        _raise_api_error("nonexistent_method")

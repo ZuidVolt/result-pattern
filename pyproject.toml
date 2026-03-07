@@ -123,6 +123,7 @@ docstring-code-line-length = 'dynamic'
 indent-style = 'space'
 
 [tool.mypy]
+files = ["src/result.py", "tests/test_result.py"]
 strict = true
 python_version = '3.14'
 ignore_missing_imports = true
@@ -131,7 +132,7 @@ show_column_numbers = true
 pretty = true
 local_partial_types = true
 strict_equality = true
-follow_imports = 'silent'
+
 
 [tool.pyright]
 typeCheckingMode = 'strict'

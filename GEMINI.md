@@ -15,11 +15,13 @@ A lightweight, single-file library designed to implement the 'Errors as Values' 
 
 - **Modern Idioms**: Use Python 3.14+ features (PEP 649, 758, 765) exclusively.
 - **Verification**: Every change must be verified by running `just check && just test`.
-- **Testing Philosophy**: Prioritize high-signal testing strategies over high-volume unit tests:
-    *   **Algebraic Laws**: Use property-based tests (Hypothesis) to verify core functional laws (Functor Identity/Composition, Monad Identity).
-    *   **Style Equivalence**: Verify that imperative `@do_notation` is functionally identical to functional method chaining.
-    *   **Data Pipelines**: Use complex integration tests to verify how components (`@safe`, `combine`, `partition`) work together in realistic flows.
-    *   **Coverage Mop-up**: Use the `test_exhaustive_mop_up()` suite as a documented "cold-smell" coverage sink to exercise unreachable branches, async short-circuits, and deep generator invariants that properties might naturally skip.
+- **Testing Philosophy**: Prioritize high-signal testing strategies through a **Dual-Layered Suite**:
+    *   **Public API Layer (`tests/test_result_api.py`)**: 
+        *   **Zero-Tolerance Type Safety**: This suite must pass all type checks (`mypy`, `ty`, `basedpyright`) with **zero** suppression comments (`type: ignore`, `pyright: ignore`, `cast`). 
+        *   **Laws & Integration**: Verifies Algebraic Laws (Functor/Monad), Style Equivalence between `@do_notation` and chaining, and complex Data Pipelines. This ensures a perfect, type-safe developer experience for consumers.
+    *   **Internal Implementation Layer (`tests/test_result_internal.py`)**: 
+        *   **Behavioral Focus**: Houses educational safeguards, unreachable coverage mop-ups, and tests for private API invariants.
+        *   **Intentional Type Bypasses**: This file uses file-level ignores to focus exclusively on runtime correctness and edge-case coverage (e.g., testing "panics" or intentional API misuse) without type-system noise.
 - **Documentation Fidelity**: Docstrings are functional code; preserve them with 100% accuracy during edits.
 
 ## Architecture & Logic

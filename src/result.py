@@ -1108,9 +1108,6 @@ def combine[T_local, E_local](results: Iterable[Result[T_local, E_local]]) -> Re
     return Ok(values)
 
 
-all_results = combine
-
-
 def partition[T_local, E_local](results: Iterable[Result[T_local, E_local]]) -> tuple[list[T_local], list[E_local]]:
     """Partition an iterable of results into two lists.
 

@@ -11,7 +11,16 @@ A lightweight, single-file library designed to implement the 'Errors as Values' 
     - **Exception Syntax:** Use unparenthesized multiple exceptions (PEP 758) for all handlers (e.g., `except ValueError, TypeError:`). Parentheses are only used if capturing with `as`.
     - **Finally Blocks:** Never use `return`, `break`, or `continue` inside `finally` blocks (PEP 765).
 - **Package Manager:** `uv` is the exclusive tool for dependency management and environment execution.
-- **Development Workflow:** Every logical change **must** be verified by running `just check && just test`.
+## Development Workflow
+
+- **Modern Idioms**: Use Python 3.14+ features (PEP 649, 758, 765) exclusively.
+- **Verification**: Every change must be verified by running `just check && just test`.
+- **Testing Philosophy**: Prioritize high-signal testing strategies over high-volume unit tests:
+    *   **Algebraic Laws**: Use property-based tests (Hypothesis) to verify core functional laws (Functor Identity/Composition, Monad Identity).
+    *   **Style Equivalence**: Verify that imperative `@do_notation` is functionally identical to functional method chaining.
+    *   **Data Pipelines**: Use complex integration tests to verify how components (`@safe`, `combine`, `partition`) work together in realistic flows.
+    *   **Coverage Mop-up**: Use the `test_exhaustive_mop_up()` suite as a documented "cold-smell" coverage sink to exercise unreachable branches, async short-circuits, and deep generator invariants that properties might naturally skip.
+- **Documentation Fidelity**: Docstrings are functional code; preserve them with 100% accuracy during edits.
 
 ## Architecture & Logic
 

@@ -20,3 +20,5 @@ env/
 *.log
 *.af~lock~
 .hypothesis/
+.coverage
+htmlcov/

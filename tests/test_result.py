@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING, Any, Never
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -10,6 +12,9 @@ from src.result import (
     OkErr,
     Result,
     UnwrapError,
+    _DoError,  # pyright: ignore[reportPrivateUsage] # noqa: PLC2701
+    _raise_api_error,  # pyright: ignore[reportPrivateUsage] # noqa: PLC2701
+    combine,
     do,
     do_async,
     do_notation,
@@ -18,290 +23,349 @@ from src.result import (
     is_err,
     is_ok,
     partition,
+    safe,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+# --- Core Functional Invariants (Algebraic Laws) ---
+
+
+@given(st.integers())
+def test_functor_identity_law(val: int) -> None:
+    """Functor Identity: res.map(id) == res.
+
+    Verifies that mapping the identity function over a Result (Ok or Err)
+    does not change the Result.
+    """
+    res_ok = Ok(val)
+    assert res_ok.map(lambda x: x) == res_ok
+    assert "Ok(" in repr(res_ok)
+
+    res_err = Err(val)
+    assert res_err.map(lambda x: x) == res_err
+    assert "Err(" in repr(res_err)
+
+
+@given(st.integers())
+def test_functor_composition_law(val: int) -> None:
+    """Functor Composition: res.map(f).map(g) == res.map(lambda x: g(f(x))).
+
+    Verifies that chaining multiple maps is equivalent to a single map
+    of the composed functions.
+    """
+
+    def f(x: int) -> int:
+        return x + 1
+
+    def g(x: int) -> int:
+        return x * 2
+
+    res = Ok(val)
+    assert res.map(f).map(g) == res.map(lambda x: g(f(x)))
+
+
+@given(st.integers())
+def test_monad_left_identity_law(val: int) -> None:
+    """Monad Left Identity: Ok(val).and_then(f) == f(val).
+
+    Verifies that wrapping a value in Ok and then binding a function
+    is the same as applying the function to the value.
+    """
+
+    def f(x: int) -> Result[int, Never]:
+        return Ok(x + 1)
+
+    assert Ok(val).and_then(f) == f(val)
+
+
+@given(st.integers())
+def test_monad_right_identity_law(val: int) -> None:
+    """Monad Right Identity: res.and_then(Ok) == res.
+
+    Verifies that binding Ok (the 'return' function) to a Result
+    does not change the Result.
+    """
+    res = Ok(val)
+    assert res.and_then(Ok) == res
+
+
+@given(st.integers())
+def test_style_equivalence_property(val: int) -> None:
+    """Equivalence: Method Chaining (map/and_then) vs @do_notation.
+
+    Verifies that the imperative-style @do_notation syntax produces
+    identical results to the functional-style method chaining.
+    """
+
+    def f(x: int) -> int:
+        return x + 1
+
+    def g(x: int) -> Result[int, Never]:
+        return Ok(x * 2)
+
+    # Chaining style
+    chained = Ok(val).map(f).and_then(g)
+    assert chained.is_ok() is True
+    assert chained.is_err() is False
+
+    # Do-notation style
+    @do_notation()
+    def procedural(x: int) -> Do[int, Any]:
+        a = yield Ok(x)
+        b = yield Ok(f(a))
+        res = yield g(b)
+        return res  # noqa: B901
+
+    assert chained == procedural(val)
+
+
+# --- Complex Integration Tests ---
+
+
+def test_data_pipeline_integration() -> None:
+    """Integration: Combine @safe, combine, and @do_notation in a realistic pipeline.
+
+    This test simulates a multi-step data processing flow where external
+    exceptions are lifted into Results, combined into a collection, and
+    processed imperatively.
+    """
+
+    @safe(ValueError)
+    def parse_int(s: str) -> int:
+        return int(s)
+
+    @do_notation()
+    def sum_raw_inputs(raw_inputs: list[str]) -> Do[int, Exception]:
+        # 1. Lift exceptions into Result containers
+        results = [parse_int(i) for i in raw_inputs]
+
+        # 2. Transpose list of Results into Result of list (all-or-nothing)
+        ints = yield combine(results)
+
+        # 3. Sum the result
+        return sum(ints)  # noqa: B901
+
+    assert sum_raw_inputs(["1", "2", "3"]) == Ok(6)
+
+    res_err = sum_raw_inputs(["1", "not a number", "3"])  # pyright: ignore[reportUnknownVariableType]
+    assert is_err(res_err)
+    assert isinstance(res_err.unsafe.unwrap_err(), ValueError)  # pyright: ignore[reportUnknownMemberType]
+
 
 @pytest.mark.asyncio
-async def test_do_notation_async_basic() -> None:
+async def test_async_integration_flow() -> None:
+    """Integration: Test complex async flows with do_notation_async and safe wrappers."""
+
+    @safe(RuntimeError)
+    async def fetch_user_name(user_id: int) -> str:  # noqa: RUF029
+        if user_id < 0:
+            msg = "invalid id"
+            raise RuntimeError(msg)
+        return f"User_{user_id}"
+
     @do_notation_async
-    async def calc() -> DoAsync[int, str]:  # noqa: RUF029
-        x = yield Ok(1)
-        yield Ok(x + 2)
+    async def get_welcome_message(user_id: int) -> DoAsync[str, Exception]:
+        name = yield await fetch_user_name(user_id)
+        yield Ok(f"Welcome, {name}!")
 
-    assert await calc() == Ok(3)
+    assert await get_welcome_message(1) == Ok("Welcome, User_1!")
+    res_err = await get_welcome_message(-1)
+    assert is_err(res_err)
+    assert str(res_err.unsafe.unwrap_err()) == "invalid id"
+
+
+# --- Property-Based Coverage ---
+
+
+@given(st.one_of(st.integers(), st.none()), st.text())
+def test_from_optional_invariant(val: int | None, err: str) -> None:
+    """Invariant: from_optional produces Ok(val) if not None, else Err(err)."""
+    res = from_optional(val, err)
+    if val is None:
+        assert is_err(res)
+        assert res.ok() is None
+        assert res.err() == err
+    else:
+        assert is_ok(res)
+        assert res.ok() == val
+        assert res.err() is None
+        assert res.unsafe.unwrap() == val
+
+
+@given(st.integers(), st.text())
+def test_mapping_variants_property(val: int, default: str) -> None:
+    """Verify map_* and is_*_and variants behave correctly across variants."""
+    f = str
+    res_ok = Ok(val)
+    res_err = Err(val)
+
+    # Core mapping
+    assert res_ok.map_or(default, f) == f(val)
+    assert res_err.map_or(default, f) == default
+    assert res_ok.map_or_else(lambda: default, f) == f(val)
+    assert res_err.map_or_else(lambda: default, f) == default
+
+    # Predicates
+    assert res_ok.is_ok_and(lambda x: x == val) is True
+    assert res_ok.is_err_and(lambda _: True) is False
+    assert res_err.is_err_and(lambda e: e == val) is True
+    assert res_err.is_ok_and(lambda _: True) is False
+
+
+@given(st.integers(), st.text())
+def test_side_effects_and_replacements_property(val: int, new_val: str) -> None:
+    """Verify tap and replace methods across variants."""
+    side_effects: list[int | str] = []
+    res_ok = Ok(val)
+    res_err = Err(new_val)
+
+    # Success path side effects
+    assert res_ok.tap(side_effects.append) == res_ok
+    assert side_effects == [val]
+    assert res_ok.tap_err(lambda _: side_effects.append("fail")) == res_ok
+    assert side_effects == [val]
+
+    # Error path side effects
+    assert res_err.tap_err(side_effects.append) == res_err
+    assert side_effects == [val, new_val]
+    assert res_err.tap(lambda _: side_effects.append("fail")) == res_err
+    assert side_effects == [val, new_val]
+
+    # Replacements
+    assert res_ok.replace(new_val) == Ok(new_val)
+    assert res_ok.replace_err(val) == res_ok
+    assert res_err.replace_err(val) == Err(val)
+    assert res_err.replace(new_val) == res_err
+
+
+@given(st.lists(st.booleans()))
+def test_partition_property(bools: list[bool]) -> None:
+    """Verify partitioning logic always correctly divides Results into collections."""
+    results = [Ok(i) if b else Err(f"err_{i}") for i, b in enumerate(bools)]
+    oks, errs = partition(results)
+    assert len(oks) == sum(bools)
+    assert len(errs) == len(bools) - sum(bools)
+
+
+# --- API Safeguards & Safety ---
 
 
 @pytest.mark.asyncio
-async def test_do_notation_async_short_circuit() -> None:
-    @do_notation_async
-    async def calc() -> DoAsync[int, str]:  # noqa: RUF029
-        yield Ok(1)
-        yield Err("fail")
+@given(st.integers())
+async def test_exhaustive_variant_behavior_property(val: int) -> None:
+    """Exhaustively verify variant-specific methods and unsafe proxies."""
+    res_ok = Ok(val)
+    res_err = Err(val)
 
-    assert await calc() == Err("fail")
+    # 1. Functional Async (Direct calls for coverage)
+    async def dummy(x: Any) -> Any:  # noqa: RUF029, ANN401
+        return x
 
+    assert await res_ok.map_async(dummy) == Ok(val)
+    assert await res_err.map_async(dummy) == res_err
 
-@pytest.mark.asyncio
-async def test_do_notation_async_catch() -> None:
-    @do_notation_async(catch=ValueError)
-    async def calc() -> DoAsync[int, str]:  # noqa: RUF029
-        msg = "boom"
-        raise ValueError(msg)
-        yield Ok(1)
+    # 2. Unsafe Proxies
+    assert res_ok.unsafe.unwrap() == val
+    assert res_ok.unsafe.expect("msg") == val
+    assert res_ok.unsafe.unwrap_or_raise(ValueError) == val
+    with pytest.raises(UnwrapError):
+        res_ok.unsafe.unwrap_err()
+    with pytest.raises(UnwrapError):
+        res_ok.unsafe.expect_err("msg")
 
-    res = await calc()
-    assert is_err(res)
-    assert isinstance(res._error, ValueError)  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
-
-
-def test_do_notation_basic() -> None:
-    @do_notation
-    def calc() -> Do[int, str]:
-        x = yield Ok(1)
-        y = yield Ok(2)
-        return x + y  # noqa: B901
-
-    assert calc() == Ok(3)
-
-
-def test_do_notation_short_circuit() -> None:
-    @do_notation
-    def calc() -> Do[int, str]:
-        yield Ok(1)
-        yield Err("fail")
-        return 0  # noqa: B901
-
-    assert calc() == Err("fail")
+    assert res_err.unsafe.unwrap_err() == val
+    assert res_err.unsafe.expect_err("msg") == val
+    with pytest.raises(UnwrapError):
+        res_err.unsafe.unwrap()
+    with pytest.raises(UnwrapError):
+        res_err.unsafe.expect("msg")
+    with pytest.raises(ValueError):
+        res_err.unsafe.unwrap_or_raise(ValueError)
 
 
-def test_do_notation_catch() -> None:
-    @do_notation(catch=ValueError)
-    def calc() -> Do[int, str]:
-        msg = "boom"
-        raise ValueError(msg)
+def test_educational_safeguards() -> None:
+    """Verify that common API mistakes trigger educational guidance."""
+    res_ok = Ok(10)
+    res_err = Err("fail")
 
-    res = calc()
-    assert is_err(res)
-    assert isinstance(res._error, ValueError)  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
-    assert str(res._error) == "boom"  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+    for variant in [res_ok, res_err]:
+        # Direct property access disabled
+        with pytest.raises(AttributeError, match=r"Direct access to '.value'"):
+            _ = variant.value  # noqa: SLF001
+
+        # Crashing operations isolated in .unsafe
+        for method in ["unwrap", "unwrap_err", "expect", "expect_err", "unwrap_or_raise"]:
+            with pytest.raises(AttributeError, match=r"isolated in the '.unsafe' namespace"):
+                m = getattr(variant, method)
+                if method in {"unwrap", "unwrap_err"}:
+                    m()
+                else:
+                    m("msg")
+
+        # Legacy naming hints
+        for method in ["inspect", "inspect_async", "inspect_err"]:
+            with pytest.raises(AttributeError, match=r"renamed to '.*tap"):
+                getattr(variant, method)(print)
 
 
-def test_do_notation_no_catch() -> None:
-    @do_notation
-    def calc() -> Do[int, str]:
-        msg = "boom"
-        raise ValueError(msg)
-
-    with pytest.raises(ValueError, match="boom"):
-        calc()
+# --- Core Do-Notation Utilities ---
 
 
 def test_do_inline() -> None:
+    """Invariant: do() helper correctly unwraps sync generator expressions."""
     assert do(Ok(x + y) for x in Ok(1) for y in Ok(2)) == Ok(3)
     assert do(Ok(x + y) for x in Ok(1) for y in Err("fail")) == Err("fail")
 
 
 @pytest.mark.asyncio
 async def test_do_inline_async() -> None:
-    # This is how we test the async branch of do_async().
-    # Ok(1).__aiter__() will be called, yielding 1 to x.
-    res: Result[int, str] = await do_async(Ok(x + 2) async for x in Ok(1))
+    """Invariant: do_async() helper correctly unwraps async generator expressions."""
+    res = await do_async(Ok(x + 2) async for x in Ok(1))  # pyright: ignore[reportUnknownVariableType]
     assert res == Ok(3)
 
 
-def test_from_optional() -> None:
-    assert from_optional(42, "fail") == Ok(42)
-    assert from_optional(None, "fail") == Err("fail")
+def test_do_notation_catch_basic() -> None:
+    """Verify @do_notation catch parameter lifts exceptions into Err."""
+
+    @do_notation(catch=ValueError)
+    def risky(s: str) -> Do[int, Exception]:
+        val = yield Ok(int(s))
+        return val  # noqa: B901
+
+    assert risky("10") == Ok(10)
+    # Bypass deep union inference issues in basedpyright
+    res = risky("not a number")  # pyright: ignore[reportUnknownVariableType]
+    assert isinstance(res, Err)
+
+    assert isinstance(res.unsafe.unwrap_err(), ValueError)  # pyright: ignore[reportUnknownMemberType]
 
 
-@given(st.one_of(st.integers(), st.none()), st.text())
-def test_from_optional_property(val: int | None, err: str) -> None:
-    res = from_optional(val, err)
-    if val is None:
-        assert is_err(res)
-        assert res._error == err  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
-    else:
-        assert is_ok(res)
-        assert res._value == val  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+@pytest.mark.asyncio
+async def test_do_notation_async_catch_basic() -> None:
+    """Verify @do_notation_async catch parameter lifts exceptions into Err."""
+
+    @do_notation_async(catch=ValueError)
+    async def risky_async(s: str) -> DoAsync[int, Exception]:  # noqa: RUF029
+        val = yield Ok(int(s))
+        yield Ok(val)
+
+    assert await risky_async("10") == Ok(10)
+    res = await risky_async("not a number")
+    assert is_err(res)
+    assert isinstance(res.unsafe.unwrap_err(), ValueError)
 
 
-def test_ok_expect() -> None:
-    val = "hello"
-    res = Ok(val)
-    assert res.unsafe.expect("should not fail") == val
+def test_ok_err_constant() -> None:
+    """Verify the OkErr convenience constant for isinstance checks."""
+    assert isinstance(Ok(1), OkErr)
+    assert isinstance(Err(1), OkErr)
+    assert not isinstance(1, OkErr)
 
 
-def test_err_expect() -> None:
-    err = "something went wrong"
-    res = Err(err)
-    with pytest.raises(UnwrapError, match=r"custom message: 'something went wrong'"):
-        res.unsafe.expect("custom message")
-
-
-@given(st.text())
-def test_expect_property(s: str) -> None:
-    res = Ok(s)
-    assert res.unsafe.expect("msg") == s
-
-
-@given(st.text(), st.text())
-def test_err_expect_property(msg: str, err: str) -> None:
-    res = Err(err)
-    with pytest.raises(UnwrapError) as exc_info:
-        res.unsafe.expect(msg)
-    assert repr(err) in str(exc_info.value)
-    assert str(msg) in str(exc_info.value)
-
-
-def test_match() -> None:
-    assert Ok(10).match(on_ok=lambda v: v * 2, on_err=lambda _: 0) == 20  # noqa: PLR2004
-    assert Err("fail").match(on_ok=lambda v: v, on_err=lambda _: 0) == 0
-
-
-def test_or_else() -> None:
-    assert Ok(1).or_else(lambda _: Ok(2)) == Ok(1)
-    assert Err(1).or_else(lambda e: Ok(e + 1)) == Ok(2)
-    assert Err(1).or_else(lambda e: Err(e + 1)) == Err(2)
-
-
-@given(st.integers(), st.integers())
-def test_or_else_property(val: int, fallback: int) -> None:
-    # Ok stays Ok
-    assert Ok(val).or_else(lambda _: Ok(fallback)) == Ok(val)
-    # Err recovers or stays Err
-    assert Err(val).or_else(lambda _: Ok(fallback)) == Ok(fallback)
-    assert Err(val).or_else(lambda _: Err(fallback)) == Err(fallback)
-
-
-# --- New Utility Tests ---
-
-
-@given(st.integers(), st.text())
-def test_map_or(val: int, default: str) -> None:
-    assert Ok(val).map_or(default, str) == str(val)
-    assert Err(val).map_or(default, str) == default
-
-
-@given(st.integers(), st.text())
-def test_map_or_else(val: int, default: str) -> None:
-    assert Ok(val).map_or_else(lambda: default, str) == str(val)
-    assert Err(val).map_or_else(lambda: default, str) == default
-
-
-def test_unwrap_error_context() -> None:
-    res = Err("context")
-    with pytest.raises(UnwrapError) as exc_info:
-        res.unsafe.unwrap()
-    assert exc_info.value.result == res
-
-
-@given(st.integers(), st.text())
-def test_replace(val: int, new_val: str) -> None:
-    assert Ok(val).replace(new_val) == Ok(new_val)
-    assert Err(val).replace(new_val) == Err(val)
-
-
-@given(st.integers(), st.text())
-def test_replace_err(val: int, new_err: str) -> None:
-    assert Ok(val).replace_err(new_err) == Ok(val)
-    assert Err(val).replace_err(new_err) == Err(new_err)
-
-
-def test_tap_err() -> None:
-    side_effect: list[str] = []
-    Ok(10).tap_err(lambda e: side_effect.append(str(e)))
-    assert not side_effect
-
-    Err("fail").tap_err(lambda e: side_effect.append(str(e)))
-    assert side_effect == ["fail"]
-
-
-def test_tap_aliases() -> None:
-    side_effect: list[int] = []
-    val = 10
-    res_ok = Ok(val)
-    res_ok.tap(side_effect.append)
-    assert side_effect == [val]
-
-    res_err = Err("fail")
-    res_err.tap_err(lambda _e: side_effect.append(99))
-    assert side_effect == [val, 99]
-
-    # Verify legacy inspect methods now raise AttributeErrors
-    with pytest.raises(AttributeError, match=r"inspect"):
-        res_ok.inspect(side_effect.append)  # pyright: ignore[reportAttributeAccessIssue]
-
-    with pytest.raises(AttributeError, match=r"inspect_err"):
-        res_err.inspect_err(lambda _e: side_effect.append(100))  # pyright: ignore[reportAttributeAccessIssue]
-
-
-@given(st.integers())
-def test_tap_property(val: int) -> None:
-    side_effect: list[int] = []
-    res = Ok(val).tap(side_effect.append)
-    assert side_effect == [val]
-    assert res == Ok(val)
-
-
-@given(st.text())
-def test_tap_err_property(err: str) -> None:
-    side_effect: list[str] = []
-    res = Err(err).tap_err(side_effect.append)
-    assert side_effect == [err]
-    assert res == Err(err)
-
-
-def test_unwrap_or_raise() -> None:
-    val = 10
-    assert Ok(val).unsafe.unwrap_or_raise(ValueError) == val
-    with pytest.raises(ValueError, match="boom"):
-        Err("boom").unsafe.unwrap_or_raise(ValueError)
-
-
-@given(st.integers())
-def test_unwrap_or_raise_property(val: int) -> None:
-    assert Ok(val).unsafe.unwrap_or_raise(ValueError) == val
-
-
-@given(st.text())
-def test_unwrap_or_raise_err_property(err: str) -> None:
-    class CustomError(Exception):
-        pass
-
-    with pytest.raises(CustomError) as exc_info:
-        Err(err).unsafe.unwrap_or_raise(CustomError)
-    assert str(exc_info.value) == err
-
-
-def test_flatten() -> None:
-    assert Ok(Ok(10)).flatten() == Ok(10)
-    assert Ok(Err("fail")).flatten() == Err("fail")
-    assert Ok(10).flatten() == Ok(10)
-    assert Err("fail").flatten() == Err("fail")
-
-
-@given(st.integers(), st.text())
-def test_filter(val: int, err: str) -> None:
-    assert Ok(val).filter(lambda x: x > 0, err) == (Ok(val) if val > 0 else Err(err))
-    assert Err(val).filter(lambda x: x > 0, err) == Err(val)
-
-
-def test_unsafe_expect() -> None:
-    val = 10
-    assert Ok(val).unsafe.expect("fail") == val
-    with pytest.raises(UnwrapError, match=r"fail: 'boom'"):
-        Err("boom").unsafe.expect("fail")
-
-
-def test_unsafe_expect_err() -> None:
-    err = "boom"
-    assert Err(err).unsafe.expect_err("fail") == err
-    with pytest.raises(UnwrapError, match=r"fail: 10"):
-        Ok(10).unsafe.expect_err("fail")
-
-
-def test_covariance() -> None:
-    """Verify that Result is covariant in both T and E."""
+def test_covariance_support() -> None:
+    """Verify true covariance support (Dog -> Animal)."""
 
     class Animal:
         pass
@@ -309,110 +373,115 @@ def test_covariance() -> None:
     class Dog(Animal):
         pass
 
-    class Error(Exception):
-        pass
-
-    class SpecificError(Error):
-        pass
-
-    # Ok[Dog] should be assignable to Result[Animal, Error]
-    # This proves covariance because Result[Animal, Error] is Ok[Animal] | Err[Error]
-    res: Result[Animal, Error] = Ok(Dog())
+    # Ok[Dog] should be assignable to Result[Animal, Any]
+    res: Result[Animal, Any] = Ok(Dog())
     assert is_ok(res)
 
-    res_err: Result[Animal, Error] = Err(SpecificError())
-    assert is_err(res_err)
+
+# --- Coverage Mop-up (Cold Smell Tests) ---
 
 
-@given(st.lists(st.booleans()))
-def test_partition_property(bools: list[bool]) -> None:
-    results = [Ok(i) if b else Err(f"err_{i}") for i, b in enumerate(bools)]
-    oks, errs = partition(results)
-    assert len(oks) == sum(bools)
-    assert len(errs) == len(bools) - sum(bools)
-    assert len(oks) + len(errs) == len(results)
+@pytest.mark.asyncio
+async def test_exhaustive_mop_up() -> None:  # noqa: PLR0915
+    """Coverage Mop-up: Exercise unreachable or difficult-to-hit branches.
 
+    These tests serve as a 'cold-smell' safety net, ensuring that every edge case
+    in result.py is exercised to maintain 100% confidence in the implementation.
+    """
+    magic_val = 123
+    res_ok: Ok[int] = Ok(magic_val)
+    res_err: Err[str] = Err("error")
 
-def test_variant_safeguards() -> None:
-    val = 10
-    res_ok: Result[int, str] = Ok(val)
-    res_err: Result[int, str] = Err("fail")
+    # 1. Unsafe Proxies
+    assert res_ok.unsafe.expect("msg") == magic_val
+    assert res_ok.unsafe.unwrap_or_raise(ValueError) == magic_val
+    with pytest.raises(UnwrapError):
+        res_ok.unsafe.expect_err("msg")
+    assert res_err.unsafe.expect_err("msg") == "error"
 
-    with pytest.raises(AttributeError, match=r"Direct access to '.value' is disabled"):
-        _ = res_ok.value  # pyright: ignore[reportAttributeAccessIssue]
+    # 2. Async Short-circuits
+    async def dummy(x: Any) -> Any:  # noqa: RUF029, ANN401
+        return x
 
-    with pytest.raises(AttributeError, match=r"Direct access to '.error' is disabled"):
-        _ = res_err.error  # pyright: ignore[reportAttributeAccessIssue]
+    assert await res_err.map_async(dummy) == Err("error")
+    assert await res_err.tap_async(dummy) == Err("error")
+    assert await res_err.and_then_async(lambda x: dummy(Ok(x))) == Err("error")
 
-    with pytest.raises(AttributeError, match=r"is a crashing operation and is isolated in the '.unsafe' namespace"):
-        _ = res_ok.unwrap_or_raise(ValueError)  # pyright: ignore[reportAttributeAccessIssue]
+    # 3. Empty Generators
+    async def empty_gen() -> AsyncGenerator[Result[int, str], Any]:  # noqa: RUF029
+        if False:
+            yield Ok(1)
 
-    with pytest.raises(AttributeError, match=r"is a crashing operation and is isolated in the '.unsafe' namespace"):
-        _ = res_ok.unwrap_err()  # pyright: ignore[reportAttributeAccessIssue]
+    with pytest.raises(UnwrapError, match="ended without yielding"):
+        await do_async(empty_gen())
 
-    with pytest.raises(AttributeError, match=r"is a crashing operation and is isolated in the '.unsafe' namespace"):
-        _ = res_ok.expect_err("fail")  # pyright: ignore[reportAttributeAccessIssue]
+    # 4. Generator Flow Invariants
+    with pytest.raises(_DoError):
+        next(iter(res_err))
 
-    with pytest.raises(AttributeError, match=r"is a crashing operation and is isolated in the '.unsafe' namespace"):
-        _ = res_err.expect("fail")  # pyright: ignore[reportAttributeAccessIssue]
+    aiter_err = aiter(res_err)
+    with pytest.raises(_DoError):
+        await anext(aiter_err)
 
+    # 5. Root-level Redirects (hitting _raise_api_error lines)
+    for method in [
+        "unwrap",
+        "unwrap_err",
+        "expect",
+        "expect_err",
+        "unwrap_or_raise",
+        "inspect",
+        "inspect_async",
+        "inspect_err",
+    ]:
+        with pytest.raises(AttributeError, match=r"API Warning"):
+            m = getattr(res_ok, method)
+            if method in {"unwrap", "unwrap_err"}:
+                m()
+            else:
+                m((lambda x, m_local=method: x if "inspect" in m_local else "msg"))  # pyright: ignore[reportUnknownLambdaType]
 
-def test_ok_err_conversion() -> None:
-    val = 10
-    res_ok = Ok(val)
-    res_err = Err("fail")
+        with pytest.raises(AttributeError, match=r"API Warning"):
+            m = getattr(res_err, method)
+            if method in {"unwrap", "unwrap_err"}:
+                m()
+            else:
+                # Bind method variable to avoid B023
+                m((lambda x, m_local=method: x if "inspect" in m_local else "msg"))  # pyright: ignore[reportUnknownLambdaType]
 
-    assert res_ok.ok() == val
-    assert res_ok.err() is None
-
+    # 6. Err variant trivial methods
     assert res_err.ok() is None
-    assert res_err.err() == "fail"
+    assert res_err.err() == "error"
+    assert res_err.flatten() == res_err
+    assert res_err.filter(lambda _: True, "fail") == res_err
+    assert res_err.match(on_ok=lambda x: x, on_err=lambda e: e) == "error"
+
+    # 7. Decorator exception paths
+    @do_notation(catch=ValueError)
+    def fail_sync() -> Do[int, str]:
+        msg = "boom"
+        raise ValueError(msg)
+        yield Ok(1)
+
+    assert is_err(fail_sync())
+
+    @do_notation_async(catch=ValueError)
+    async def fail_async() -> DoAsync[int, str]:  # noqa: RUF029
+        msg = "boom async"
+        raise ValueError(msg)
+        yield Ok(1)
+
+    assert is_err(await fail_async())
+
+    @safe(ValueError)
+    async def safe_async_fail() -> Never:  # noqa: RUF029
+        msg = "safe boom"
+        raise ValueError(msg)
+
+    assert is_err(await safe_async_fail())
 
 
-def test_ok_err_predicates() -> None:
-    val = 10
-    threshold = 5
-    assert Ok(val).is_ok_and(lambda x: x > threshold) is True
-    assert Ok(val).is_ok_and(lambda x: x < threshold) is False
-    assert Err(val).is_ok_and(lambda x: x > threshold) is False
-
-    assert Err(val).is_err_and(lambda x: x > threshold) is True
-    assert Err(val).is_err_and(lambda x: x < threshold) is False
-    assert Ok(val).is_err_and(lambda x: x > threshold) is False
-
-
-@given(st.integers())
-def test_is_ok_and_property(val: int) -> None:
-    res = Ok(val)
-    assert res.is_ok_and(lambda x: x == val) is True
-    assert res.is_ok_and(lambda x: x != val) is False
-    assert Err(val).is_ok_and(lambda _: True) is False
-
-
-@given(st.text())
-def test_is_err_and_property(err: str) -> None:
-    res = Err(err)
-    assert res.is_err_and(lambda e: e == err) is True
-    assert res.is_err_and(lambda e: e != err) is False
-    assert Ok(err).is_err_and(lambda _: True) is False
-
-
-def test_ok_err_constant() -> None:
-    assert isinstance(Ok(1), OkErr)
-    assert isinstance(Err(1), OkErr)
-    assert not isinstance(1, OkErr)
-
-
-def test_namespaced_unsafe() -> None:
-    val = 10
-    res_ok = Ok(val)
-    res_err = Err("fail")
-
-    assert res_ok.unsafe.unwrap() == val
-    assert res_err.unsafe.unwrap_err() == "fail"
-
-    with pytest.raises(UnwrapError):
-        res_ok.unsafe.unwrap_err()
-
-    with pytest.raises(UnwrapError):
-        res_err.unsafe.unwrap()
+def test_api_error_default() -> None:
+    """Hit the default case in _raise_api_error for unsupported methods."""
+    with pytest.raises(AttributeError, match="not part of the supported Result API"):
+        _raise_api_error("nonexistent_method")

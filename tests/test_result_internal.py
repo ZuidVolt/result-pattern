@@ -8,6 +8,7 @@
 # pyright: reportPrivateUsage=false
 # pyright: reportUnusedVariable=false
 # pyright: reportUnnecessaryTypeIgnoreComment=false
+# pyright: reportUnnecessaryComparison=false
 
 from typing import TYPE_CHECKING, Any, Never
 
@@ -202,3 +203,35 @@ def test_api_error_default() -> None:
     """Hit the default case in _raise_api_error for unsupported methods."""
     with pytest.raises(AttributeError, match="not part of the supported Result API"):
         _raise_api_error("nonexistent_method")
+
+
+def test_unwrap_error_chaining() -> None:
+    """Verify that exceptions wrapped in Err are chained during panic."""
+    cause = ValueError("original cause")
+    res_err = Err(cause)
+
+    with pytest.raises(UnwrapError) as exc_info:
+        res_err.unsafe.unwrap()
+
+    assert exc_info.value.__cause__ is cause
+
+    with pytest.raises(UnwrapError) as exc_info:
+        res_err.unsafe.expect("custom msg")
+
+    assert exc_info.value.__cause__ is cause
+
+
+def test_pattern_matching_ergonomics() -> None:
+    """Verify __match_args__ alignment for cleaner matching."""
+    val = 10
+    err_msg = "fail"
+
+    def check_match(res: Result[int, str]) -> None:
+        match res:
+            case Ok(value):
+                assert value == val
+            case Err(error):
+                assert error == err_msg
+
+    check_match(Ok(val))
+    check_match(Err(err_msg))

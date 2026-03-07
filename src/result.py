@@ -1,7 +1,7 @@
 """# Result: Functional Error Handling for Modern Python.
 
 A lightweight, single-file library designed to implement the 'Errors as Values'
-pattern in Python 3.12+. This library tries to help bridge the gap between pure
+pattern in Python 3.14+. This library tries to help bridge the gap between pure
 functional safety and the pragmatic realities of the exception-heavy Python ecosystem.
 
 ## Core Philosophy
@@ -45,7 +45,7 @@ import inspect
 from collections.abc import AsyncGenerator, Generator
 from dataclasses import dataclass
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypeIs, TypeVar, Union, cast, overload
+from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn, TypeIs, TypeVar, Union, cast, overload
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Iterable
@@ -197,7 +197,10 @@ class _ErrUnsafe[E_co]:
             UnwrapError: Always raised, containing the error state.
         """
         msg = f"Called unwrap on an Err value: {self._owner._error!r}"  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
-        raise UnwrapError(self._owner, msg)
+        exc = UnwrapError(self._owner, msg)
+        if isinstance(self._owner._error, BaseException):  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+            raise exc from self._owner._error  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        raise exc
 
     def unwrap_err(self) -> E_co:
         """Extract the contained error. Always succeeds on Err.
@@ -217,7 +220,10 @@ class _ErrUnsafe[E_co]:
             UnwrapError: Always raised.
         """
         msg_final = f"{msg}: {self._owner._error!r}"  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
-        raise UnwrapError(self._owner, msg_final)
+        exc = UnwrapError(self._owner, msg_final)
+        if isinstance(self._owner._error, BaseException):  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+            raise exc from self._owner._error  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        raise exc
 
     def unwrap_or_raise(self, e: type[Exception]) -> NoReturn:
         """Raise a custom exception with the error state.
@@ -263,7 +269,7 @@ class Ok[T_co]:
     """
 
     _value: T_co
-    __match_args__ = ("_value",)
+    __match_args__ = ("value",)
 
     def __init__(self, value: T_co) -> None:
         """Initialize an Ok variant.
@@ -553,8 +559,19 @@ class Ok[T_co]:
         """
         return await func(self._value)
 
-    def or_else(self, _func: Callable[[Any], Result[T_co, Any]]) -> Ok[T_co]:
-        """Ignore the recovery function and return self unchanged."""
+    def or_else(self, _func: object) -> Ok[T_co]:
+        """Ignore the recovery function and return self unchanged.
+
+        Args:
+            _func: Ignored recovery function.
+
+        Returns:
+            The current instance unchanged.
+
+        Examples:
+            >>> Ok(10).or_else(lambda e: Ok(0))
+            Ok(10)
+        """
         return self
 
     def flatten(self) -> Result[Any, Any]:
@@ -685,7 +702,7 @@ class Err[E_co]:
     """
 
     _error: E_co
-    __match_args__ = ("_error",)
+    __match_args__ = ("error",)
 
     def __init__(self, error: E_co) -> None:
         """Initialize an Err variant.
@@ -1034,6 +1051,17 @@ class Err[E_co]:
             'fail'
         """
         return self._error
+
+
+OkErr: Final = (Ok, Err)
+"""
+A constant for use in `isinstance` checks.
+
+Examples:
+    >>> res = Ok(10)
+    >>> isinstance(res, OkErr)
+    True
+"""
 
 
 # --- Standalone Utilities ---

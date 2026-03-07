@@ -9,6 +9,7 @@ from src.result import (
     DoAsync,
     Err,
     Ok,
+    OkErr,
     Result,
     combine,
     do,
@@ -300,3 +301,18 @@ def test_covariance_support() -> None:
     # Ok[Dog] should be assignable to Result[Animal, Any]
     res: Result[Animal, Any] = Ok(Dog())
     assert is_ok(res)
+
+
+def test_convenience_utils() -> None:
+    """Verify OkErr constant and fluent or_else on Ok."""
+    assert isinstance(Ok(1), OkErr)
+    assert isinstance(Err(1), OkErr)
+    assert not isinstance(1, OkErr)
+
+    # Use explicit lambda type to satisfy basedpyright in public API test
+    res_ok: Ok[int] = Ok(10)
+
+    def recover(_: object) -> Ok[int]:
+        return Ok(0)
+
+    assert res_ok.or_else(recover) == Ok(10)

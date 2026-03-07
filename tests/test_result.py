@@ -293,7 +293,7 @@ def test_educational_safeguards() -> None:
     for variant in [res_ok, res_err]:
         # Direct property access disabled
         with pytest.raises(AttributeError, match=r"Direct access to '.value'"):
-            _ = variant.value  # noqa: SLF001
+            _ = variant.value
 
         # Crashing operations isolated in .unsafe
         for method in ["unwrap", "unwrap_err", "expect", "expect_err", "unwrap_or_raise"]:

@@ -281,7 +281,7 @@ class Ok[T_co]:
     """
 
     _value: T_co
-    __match_args__ = ("value",)
+    __match_args__ = ("_value",)
 
     def __init__(self, value: T_co) -> None:
         """Initialize an Ok variant.
@@ -738,7 +738,7 @@ class Err[E_co]:
     """
 
     _error: E_co
-    __match_args__ = ("error",)
+    __match_args__ = ("_error",)
 
     def __init__(self, error: E_co) -> None:
         """Initialize an Err variant.

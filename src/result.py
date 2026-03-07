@@ -38,13 +38,21 @@ that failure paths are handled as diligently as success paths.
     exceptions. Lifting must be performed at the integration boundaries.
 """
 
+from __future__ import annotations
+
 import inspect
+from collections.abc import AsyncGenerator, Generator
 from dataclasses import dataclass
 from functools import wraps
-from typing import TYPE_CHECKING, Any, NoReturn, TypeIs
+from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn, TypeIs, TypeVar, Union
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Generator, Iterable
+    from collections.abc import Awaitable, Callable, Coroutine, Iterable
+
+T_co = TypeVar("T_co", covariant=True)
+E_co = TypeVar("E_co", covariant=True)
+T = TypeVar("T")
+E = TypeVar("E")
 
 # --- Exceptions ---
 
@@ -80,7 +88,7 @@ class _DoError(Exception):
 
 # --- Type Aliases ---
 
-type Result[T, E] = Ok[T] | Err[E]
+Result = Union["Ok[T_co]", "Err[E_co]"]
 """
 A type that represents either success (`Ok`) or failure (`Err`).
 
@@ -91,6 +99,7 @@ Examples:
     >>> def get_user(id: int) -> Result[dict, str]:
     ...     return Ok({"id": id}) if id > 0 else Err("Invalid ID")
 """
+
 
 type Do[T, E] = Generator[Result[Any, E], Any, T]
 """
@@ -113,12 +122,12 @@ a return value.
 
 
 @dataclass(frozen=True, slots=True)
-class _OkUnsafe[T]:
+class _OkUnsafe[T_co]:
     """Namespace for operations that may raise an exception on an Ok variant."""
 
-    _owner: Ok[T]
+    _owner: Ok[T_co]
 
-    def unwrap(self) -> T:
+    def unwrap(self) -> T_co:
         """Extract the contained value. Always succeeds on Ok.
 
         Returns:
@@ -135,7 +144,7 @@ class _OkUnsafe[T]:
         msg = f"Called unwrap_err on an Ok value: {self._owner._value!r}"  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
         raise UnwrapError(self._owner, msg)
 
-    def expect(self, _msg: str) -> T:
+    def expect(self, _msg: str) -> T_co:
         """Extract the contained value, ignoring the custom message.
 
         Always succeeds on `Ok` variants.
@@ -148,7 +157,7 @@ class _OkUnsafe[T]:
         """
         return self._owner._value  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
 
-    def unwrap_or_raise(self, _e: type[Exception]) -> T:
+    def unwrap_or_raise(self, _e: type[Exception]) -> T_co:
         """Extract the contained value, ignoring the exception type.
 
         Always succeeds on `Ok` variants.
@@ -161,12 +170,24 @@ class _OkUnsafe[T]:
         """
         return self._owner._value  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
 
+    def expect_err(self, msg: str) -> NoReturn:
+        """Raise an UnwrapError because an Ok value does not contain an error.
+
+        Args:
+            msg: The custom panic message.
+
+        Raises:
+            UnwrapError: Always raised.
+        """
+        msg_final = f"{msg}: {self._owner._value!r}"  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        raise UnwrapError(self._owner, msg_final)
+
 
 @dataclass(frozen=True, slots=True)
-class _ErrUnsafe[E]:
+class _ErrUnsafe[E_co]:
     """Namespace for operations that may raise an exception on an Err variant."""
 
-    _owner: Err[E]
+    _owner: Err[E_co]
 
     def unwrap(self) -> NoReturn:
         """Raise an UnwrapError because an error cannot be unwrapped.
@@ -177,7 +198,7 @@ class _ErrUnsafe[E]:
         msg = f"Called unwrap on an Err value: {self._owner._error!r}"  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
         raise UnwrapError(self._owner, msg)
 
-    def unwrap_err(self) -> E:
+    def unwrap_err(self) -> E_co:
         """Extract the contained error. Always succeeds on Err.
 
         Returns:
@@ -208,12 +229,25 @@ class _ErrUnsafe[E]:
         """
         raise e(self._owner._error)  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
 
+    def expect_err(self, _msg: str) -> E_co:
+        """Extract the contained error, ignoring the custom message.
+
+        Always succeeds on `Err` variants.
+
+        Args:
+            _msg: The custom panic message (ignored on failure).
+
+        Returns:
+            The contained error state.
+        """
+        return self._owner._error  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+
 
 # --- Core Variants ---
 
 
 @dataclass(frozen=True, slots=True)  # noqa: PLR0904
-class Ok[T]:
+class Ok[T_co]:
     """A container representing a successful computation result.
 
     To access the value safely, use pattern matching, functional chaining,
@@ -227,10 +261,10 @@ class Ok[T]:
         Success: 200
     """
 
-    _value: T
+    _value: T_co
     __match_args__ = ("_value",)
 
-    def __init__(self, value: T) -> None:
+    def __init__(self, value: T_co) -> None:
         """Initialize an Ok variant.
 
         Args:
@@ -238,16 +272,16 @@ class Ok[T]:
         """
         object.__setattr__(self, "_value", value)
 
-    def __iter__(self) -> Generator[Any, Any, T]:
+    def __iter__(self) -> Generator[Any, Any, T_co]:
         """Allow use in generator expressions for do-notation."""
         return (yield self._value)  # noqa: B901
 
-    async def __aiter__(self) -> AsyncGenerator[T, Any]:
+    async def __aiter__(self) -> AsyncGenerator[T_co, Any]:
         """Allow use in async generator expressions for do-notation."""
         yield self._value
 
     @property
-    def unsafe(self) -> _OkUnsafe[T]:
+    def unsafe(self) -> _OkUnsafe[T_co]:
         """Namespace for operations that might panic (raise exceptions).
 
         Examples:
@@ -259,7 +293,7 @@ class Ok[T]:
     def __repr__(self) -> str:
         return f"Ok({self._value!r})"
 
-    def is_ok(self) -> bool:
+    def is_ok(self) -> Literal[True]:
         """Check if the result is an Ok variant.
 
         Returns:
@@ -267,11 +301,39 @@ class Ok[T]:
         """
         return True
 
-    def is_err(self) -> bool:
+    def is_err(self) -> Literal[False]:
         """Check if the result is an Err variant.
 
         Returns:
             Always False for Ok instances.
+        """
+        return False
+
+    def is_ok_and(self, predicate: Callable[[T_co], bool]) -> bool:
+        """Check if the result is an Ok variant and matches a predicate.
+
+        Args:
+            predicate: A function to test the success value.
+
+        Returns:
+            True if the result is Ok and the predicate returns True.
+
+        Examples:
+            >>> Ok(10).is_ok_and(lambda x: x > 5)
+            True
+        """
+        return predicate(self._value)
+
+    def is_err_and(self, _predicate: Callable[[Any], bool]) -> Literal[False]:
+        """Check if the result is an Err variant and matches a predicate.
+
+        Always returns False for Ok instances.
+
+        Args:
+            _predicate: Ignored for Ok instances.
+
+        Returns:
+            Always False.
         """
         return False
 
@@ -307,13 +369,29 @@ class Ok[T]:
         """Root-level expect is disabled. Use .unsafe.expect() instead."""
         _raise_api_error("expect")
 
+    def expect_err(self, _msg: str) -> NoReturn:
+        """Root-level expect_err is disabled. Use .unsafe.expect_err() instead."""
+        _raise_api_error("expect_err")
+
     def unwrap_or_raise(self, _e: type[Exception]) -> NoReturn:
         """Root-level unwrap_or_raise is disabled. Use .unsafe.unwrap_or_raise() instead."""
         _raise_api_error("unwrap_or_raise")
 
+    def inspect(self, _func: Callable[[Any], Any]) -> NoReturn:
+        """Root-level inspect is disabled. Use .tap() instead."""
+        _raise_api_error("inspect")
+
+    def inspect_async(self, _func: Callable[[Any], Awaitable[Any]]) -> NoReturn:
+        """Root-level inspect_async is disabled. Use .tap_async() instead."""
+        _raise_api_error("inspect_async")
+
+    def inspect_err(self, _func: Callable[[Any], Any]) -> NoReturn:
+        """Root-level inspect_err is disabled. Use .tap_err() instead."""
+        _raise_api_error("inspect_err")
+
     # --- Functional API ---
 
-    def map[U](self, func: Callable[[T], U]) -> Ok[U]:
+    def map[U](self, func: Callable[[T_co], U]) -> Ok[U]:
         """Apply a function to the contained value.
 
         Args:
@@ -328,7 +406,7 @@ class Ok[T]:
         """
         return Ok(func(self._value))
 
-    async def map_async[U](self, func: Callable[[T], Awaitable[U]]) -> Ok[U]:
+    async def map_async[U](self, func: Callable[[T_co], Awaitable[U]]) -> Ok[U]:
         """Apply an async function to the contained value.
 
         Args:
@@ -345,7 +423,7 @@ class Ok[T]:
         """
         return Ok(await func(self._value))
 
-    def map_or[U](self, _default: U, func: Callable[[T], U]) -> U:
+    def map_or[U](self, _default: U, func: Callable[[T_co], U]) -> U:
         """Apply a function to the value or return a default.
 
         Args:
@@ -361,7 +439,7 @@ class Ok[T]:
         """
         return func(self._value)
 
-    def map_or_else[U](self, _default_func: Callable[[], U], func: Callable[[T], U]) -> U:
+    def map_or_else[U](self, _default_func: Callable[[], U], func: Callable[[T_co], U]) -> U:
         """Apply a function to the value or compute a default.
 
         Args:
@@ -377,7 +455,7 @@ class Ok[T]:
         """
         return func(self._value)
 
-    def map_err(self, _func: Callable[[Any], Any]) -> Ok[T]:
+    def map_err(self, _func: Callable[[Any], Any]) -> Ok[T_co]:
         """Ignore the error mapping and return self unchanged."""
         return self
 
@@ -393,11 +471,11 @@ class Ok[T]:
         """
         return Ok(value)
 
-    def replace_err(self, _error: object) -> Ok[T]:
+    def replace_err(self, _error: object) -> Ok[T_co]:
         """Ignore the error replacement and return self unchanged."""
         return self
 
-    def tap(self, func: Callable[[T], Any]) -> Ok[T]:
+    def tap(self, func: Callable[[T_co], Any]) -> Ok[T_co]:
         """Call a function with the contained value for side effects.
 
         Args:
@@ -414,7 +492,7 @@ class Ok[T]:
         func(self._value)
         return self
 
-    async def tap_async(self, func: Callable[[T], Awaitable[Any]]) -> Ok[T]:
+    async def tap_async(self, func: Callable[[T_co], Awaitable[Any]]) -> Ok[T_co]:
         """Call an async function with the contained value for side effects.
 
         Args:
@@ -433,23 +511,11 @@ class Ok[T]:
         await func(self._value)
         return self
 
-    def tap_err(self, _func: Callable[[Any], Any]) -> Ok[T]:
+    def tap_err(self, _func: Callable[[Any], Any]) -> Ok[T_co]:
         """Ignore the error side effect and return self unchanged."""
         return self
 
-    def inspect(self, _func: Callable[[T], Any]) -> NoReturn:
-        """Root-level inspect is disabled. Use .tap() instead."""
-        _raise_api_error("inspect")
-
-    def inspect_async(self, _func: Callable[[T], Awaitable[Any]]) -> NoReturn:
-        """Root-level inspect_async is disabled. Use .tap_async() instead."""
-        _raise_api_error("inspect_async")
-
-    def inspect_err(self, _func: Callable[[Any], Any]) -> NoReturn:
-        """Root-level inspect_err is disabled. Use .tap_err() instead."""
-        _raise_api_error("inspect_err")
-
-    def and_then[U, E_local](self, func: Callable[[T], Result[U, E_local]]) -> Result[U, E_local]:
+    def and_then[U, E_local](self, func: Callable[[T_co], Result[U, E_local]]) -> Result[U, E_local]:
         """Chain another result-returning operation (FlatMap).
 
         Args:
@@ -467,7 +533,7 @@ class Ok[T]:
         return func(self._value)
 
     async def and_then_async[U, E_local](
-        self, func: Callable[[T], Awaitable[Result[U, E_local]]]
+        self, func: Callable[[T_co], Awaitable[Result[U, E_local]]]
     ) -> Result[U, E_local]:
         """Chain an async computation that might fail.
 
@@ -485,7 +551,7 @@ class Ok[T]:
         """
         return await func(self._value)
 
-    def or_else(self, _func: Callable[[Any], Result[T, Any]]) -> Ok[T]:
+    def or_else(self, _func: Callable[[Any], Result[T_co, Any]]) -> Ok[T_co]:
         """Ignore the recovery function and return self unchanged."""
         return self
 
@@ -509,7 +575,7 @@ class Ok[T]:
             return val  # pyright: ignore[reportUnknownVariableType]
         return self
 
-    def filter[E_local](self, predicate: Callable[[T], bool], error: E_local) -> Result[T, E_local]:
+    def filter[E_local](self, predicate: Callable[[T_co], bool], error: E_local) -> Result[T_co, E_local]:
         """Convert success to failure if a condition is not met.
 
         Args:
@@ -529,7 +595,7 @@ class Ok[T]:
             return self
         return Err(error)
 
-    def match[U](self, on_ok: Callable[[T], U], on_err: Callable[[Any], U]) -> U:  # noqa: ARG002
+    def match[U](self, on_ok: Callable[[T_co], U], on_err: Callable[[Any], U]) -> U:  # noqa: ARG002
         """Exhaustively handle both success and failure cases.
 
         Args:
@@ -546,7 +612,7 @@ class Ok[T]:
         """
         return on_ok(self._value)
 
-    def unwrap_or(self, _default: object) -> T:
+    def unwrap_or(self, _default: object) -> T_co:
         """Extract the contained value, ignoring the default.
 
         Args:
@@ -561,7 +627,7 @@ class Ok[T]:
         """
         return self._value
 
-    def unwrap_or_else(self, _func: Callable[[Any], T]) -> T:
+    def unwrap_or_else(self, _func: Callable[[Any], T_co]) -> T_co:
         """Extract the contained value, ignoring the fallback function.
 
         Args:
@@ -576,7 +642,7 @@ class Ok[T]:
         """
         return self._value
 
-    def ok(self) -> T:
+    def ok(self) -> T_co:
         """Convert to Optional[T].
 
         Returns:
@@ -602,7 +668,7 @@ class Ok[T]:
 
 
 @dataclass(frozen=True, slots=True)  # noqa: PLR0904
-class Err[E]:
+class Err[E_co]:
     """A failed result containing an error state.
 
     To handle the error safely, use pattern matching or recovery methods like
@@ -616,10 +682,10 @@ class Err[E]:
         Error: not found
     """
 
-    _error: E
+    _error: E_co
     __match_args__ = ("_error",)
 
-    def __init__(self, error: E) -> None:
+    def __init__(self, error: E_co) -> None:
         """Initialize an Err variant.
 
         Args:
@@ -627,7 +693,7 @@ class Err[E]:
         """
         object.__setattr__(self, "_error", error)
 
-    def __iter__(self) -> Generator[Result[Any, E], Any, NoReturn]:
+    def __iter__(self) -> Generator[Result[Any, E_co], Any, NoReturn]:
         """Allow use in generator expressions for do-notation."""
         raise _DoError(self)
         yield self  # should be UNREACHABLE
@@ -638,7 +704,7 @@ class Err[E]:
         yield self  # should be UNREACHABLE
 
     @property
-    def unsafe(self) -> _ErrUnsafe[E]:
+    def unsafe(self) -> _ErrUnsafe[E_co]:
         """Namespace for operations that might panic.
 
         Examples:
@@ -650,7 +716,7 @@ class Err[E]:
     def __repr__(self) -> str:
         return f"Err({self._error!r})"
 
-    def is_ok(self) -> bool:
+    def is_ok(self) -> Literal[False]:
         """Check if the result is an Ok variant.
 
         Returns:
@@ -658,13 +724,41 @@ class Err[E]:
         """
         return False
 
-    def is_err(self) -> bool:
+    def is_err(self) -> Literal[True]:
         """Check if the result is an Err variant.
 
         Returns:
             Always True for Err instances.
         """
         return True
+
+    def is_ok_and(self, _predicate: Callable[[Any], bool]) -> Literal[False]:
+        """Check if the result is an Ok variant and matches a predicate.
+
+        Always returns False for Err instances.
+
+        Args:
+            _predicate: Ignored for Err instances.
+
+        Returns:
+            Always False.
+        """
+        return False
+
+    def is_err_and(self, predicate: Callable[[E_co], bool]) -> bool:
+        """Check if the result is an Err variant and matches a predicate.
+
+        Args:
+            predicate: A function to test the error state.
+
+        Returns:
+            True if the result is Err and the predicate returns True.
+
+        Examples:
+            >>> Err(404).is_err_and(lambda e: e == 404)
+            True
+        """
+        return predicate(self._error)
 
     def __getattr__(self, name: str) -> NoReturn:
         """Educational runtime safeguard against common API mistakes."""
@@ -698,17 +792,33 @@ class Err[E]:
         """Root-level expect is disabled. Use .unsafe.expect() instead."""
         _raise_api_error("expect")
 
+    def expect_err(self, _msg: str) -> NoReturn:
+        """Root-level expect_err is disabled. Use .unsafe.expect_err() instead."""
+        _raise_api_error("expect_err")
+
     def unwrap_or_raise(self, _e: type[Exception]) -> NoReturn:
         """Root-level unwrap_or_raise is disabled. Use .unsafe.unwrap_or_raise() instead."""
         _raise_api_error("unwrap_or_raise")
 
+    def inspect(self, _func: Callable[[Any], Any]) -> NoReturn:
+        """Root-level inspect is disabled. Use .tap() instead."""
+        _raise_api_error("inspect")
+
+    def inspect_async(self, _func: Callable[[Any], Awaitable[Any]]) -> NoReturn:
+        """Root-level inspect_async is disabled. Use .tap_async() instead."""
+        _raise_api_error("inspect_async")
+
+    def inspect_err(self, _func: Callable[[Any], Any]) -> NoReturn:
+        """Root-level inspect_err is disabled. Use .tap_err() instead."""
+        _raise_api_error("inspect_err")
+
     # --- Functional API ---
 
-    def map[U, T_local](self, _func: Callable[[T_local], U]) -> Err[E]:
+    def map[U, T_local](self, _func: Callable[[T_local], U]) -> Err[E_co]:
         """Ignore the value mapping and return self unchanged."""
         return self
 
-    async def map_async[U, T_local](self, _func: Callable[[T_local], Awaitable[U]]) -> Err[E]:
+    async def map_async[U, T_local](self, _func: Callable[[T_local], Awaitable[U]]) -> Err[E_co]:
         """Ignore success mapping and return self unchanged.
 
         Args:
@@ -751,7 +861,7 @@ class Err[E]:
         """
         return default_func()
 
-    def map_err[F](self, func: Callable[[E], F]) -> Err[F]:
+    def map_err[F](self, func: Callable[[E_co], F]) -> Err[F]:
         """Apply a function to the contained error.
 
         Args:
@@ -766,7 +876,7 @@ class Err[E]:
         """
         return Err(func(self._error))
 
-    def replace(self, _value: object) -> Err[E]:
+    def replace(self, _value: object) -> Err[E_co]:
         """Ignore the replacement and return self unchanged."""
         return self
 
@@ -785,11 +895,11 @@ class Err[E]:
         """
         return Err(error)
 
-    def tap(self, _func: Callable[[Any], Any]) -> Err[E]:
+    def tap(self, _func: Callable[[Any], Any]) -> Err[E_co]:
         """Ignore the side effect and return self unchanged."""
         return self
 
-    async def tap_async[T_local](self, _func: Callable[[T_local], Awaitable[Any]]) -> Err[E]:
+    async def tap_async[T_local](self, _func: Callable[[T_local], Awaitable[Any]]) -> Err[E_co]:
         """Ignore async success side effects.
 
         Args:
@@ -800,7 +910,7 @@ class Err[E]:
         """
         return self
 
-    def tap_err(self, func: Callable[[E], Any]) -> Err[E]:
+    def tap_err(self, func: Callable[[E_co], Any]) -> Err[E_co]:
         """Call a function with the contained error for side effects.
 
         Args:
@@ -817,23 +927,11 @@ class Err[E]:
         func(self._error)
         return self
 
-    def inspect(self, _func: Callable[[Any], Any]) -> NoReturn:
-        """Root-level inspect is disabled. Use .tap() instead."""
-        _raise_api_error("inspect")
-
-    def inspect_async(self, _func: Callable[[Any], Awaitable[Any]]) -> NoReturn:
-        """Root-level inspect_async is disabled. Use .tap_async() instead."""
-        _raise_api_error("inspect_async")
-
-    def inspect_err(self, _func: Callable[[E], Any]) -> NoReturn:
-        """Root-level inspect_err is disabled. Use .tap_err() instead."""
-        _raise_api_error("inspect_err")
-
-    def and_then(self, _func: Callable[[Any], Result[Any, Any]]) -> Err[E]:
+    def and_then(self, _func: Callable[[Any], Result[Any, Any]]) -> Err[E_co]:
         """Short-circuit the chain and return self unchanged."""
         return self
 
-    async def and_then_async[U, T_local](self, _func: Callable[[T_local], Awaitable[Result[U, E]]]) -> Err[E]:
+    async def and_then_async[U, T_local](self, _func: Callable[[T_local], Awaitable[Result[U, E_co]]]) -> Err[E_co]:
         """Short-circuit async success chaining.
 
         Args:
@@ -844,7 +942,7 @@ class Err[E]:
         """
         return self
 
-    def or_else[T_local, F_local](self, func: Callable[[E], Result[T_local, F_local]]) -> Result[T_local, F_local]:
+    def or_else[T_local, F_local](self, func: Callable[[E_co], Result[T_local, F_local]]) -> Result[T_local, F_local]:
         """Call a function with the error to attempt recovery.
 
         Args:
@@ -859,15 +957,15 @@ class Err[E]:
         """
         return func(self._error)
 
-    def flatten(self) -> Err[E]:
+    def flatten(self) -> Err[E_co]:
         """Short-circuit the flattening and return self unchanged."""
         return self
 
-    def filter(self, _predicate: Callable[[Any], bool], _error: object) -> Err[E]:
+    def filter(self, _predicate: Callable[[Any], bool], _error: object) -> Err[E_co]:
         """Ignore the filter and return self unchanged."""
         return self
 
-    def match[U, T_local](self, on_ok: Callable[[T_local], U], on_err: Callable[[E], U]) -> U:  # noqa: ARG002
+    def match[U, T_local](self, on_ok: Callable[[T_local], U], on_err: Callable[[E_co], U]) -> U:  # noqa: ARG002
         """Exhaustively handle both success and failure cases.
 
         Args:
@@ -899,7 +997,7 @@ class Err[E]:
         """
         return default
 
-    def unwrap_or_else[T_local](self, func: Callable[[E], T_local]) -> T_local:
+    def unwrap_or_else[T_local](self, func: Callable[[E_co], T_local]) -> T_local:
         """Call a function with the error to produce a fallback value.
 
         Args:
@@ -923,7 +1021,7 @@ class Err[E]:
         """
         return
 
-    def err(self) -> E:
+    def err(self) -> E_co:
         """Convert to Optional[E]. Returns the error state.
 
         Returns:
@@ -939,7 +1037,7 @@ class Err[E]:
 # --- Standalone Utilities ---
 
 
-def is_ok[T, E](result: Result[T, E]) -> TypeIs[Ok[T]]:
+def is_ok[T_local, E_local](result: Result[T_local, E_local]) -> TypeIs[Ok[T_local]]:
     """Check if a result is an `Ok` variant and narrow its type.
 
     Examples:
@@ -951,7 +1049,7 @@ def is_ok[T, E](result: Result[T, E]) -> TypeIs[Ok[T]]:
     return isinstance(result, Ok)
 
 
-def is_err[T, E](result: Result[T, E]) -> TypeIs[Err[E]]:
+def is_err[T_local, E_local](result: Result[T_local, E_local]) -> TypeIs[Err[E_local]]:
     """Check if a result is an `Err` variant and narrow its type.
 
     Examples:
@@ -963,7 +1061,7 @@ def is_err[T, E](result: Result[T, E]) -> TypeIs[Err[E]]:
     return isinstance(result, Err)
 
 
-def from_optional[T, E](value: T | None, error: E) -> Result[T, E]:
+def from_optional[T_co, E_co](value: T_co | None, error: E_co) -> Result[T_co, E_co]:
     """Create a Result from an optional value.
 
     Args:
@@ -984,7 +1082,7 @@ def from_optional[T, E](value: T | None, error: E) -> Result[T, E]:
     return Ok(value)
 
 
-def combine[T, E](results: Iterable[Result[T, E]]) -> Result[list[T], E]:
+def combine[T_local, E_local](results: Iterable[Result[T_local, E_local]]) -> Result[list[T_local], E_local]:
     """Combine an iterable of results into a single result (All-or-Nothing).
 
     If all results are `Ok`, returns an `Ok` containing a list of all values.
@@ -1002,7 +1100,7 @@ def combine[T, E](results: Iterable[Result[T, E]]) -> Result[list[T], E]:
         >>> combine([Ok(1), Err("fail")])
         Err('fail')
     """
-    values: list[T] = []
+    values: list[T_local] = []
     for res in results:
         if isinstance(res, Err):
             return res  # pyright: ignore[reportReturnType]
@@ -1013,7 +1111,7 @@ def combine[T, E](results: Iterable[Result[T, E]]) -> Result[list[T], E]:
 all_results = combine
 
 
-def partition[T, E](results: Iterable[Result[T, E]]) -> tuple[list[T], list[E]]:
+def partition[T_local, E_local](results: Iterable[Result[T_local, E_local]]) -> tuple[list[T_local], list[E_local]]:
     """Partition an iterable of results into two lists.
 
     Unlike `combine`, this does not short-circuit. It collects all values
@@ -1029,8 +1127,8 @@ def partition[T, E](results: Iterable[Result[T, E]]) -> tuple[list[T], list[E]]:
         >>> partition([Ok(1), Err("a"), Ok(2)])
         ([1, 2], ['a'])
     """
-    oks: list[T] = []
-    errs: list[E] = []
+    oks: list[T_local] = []
+    errs: list[E_local] = []
     for res in results:
         if isinstance(res, Ok):
             oks.append(res._value)  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
@@ -1099,7 +1197,7 @@ def safe[T, **P](
     return decorator
 
 
-def do[T, E](gen: Generator[Result[T, E], Any, T]) -> Result[T, E]:
+def do[T_co, E_co](gen: Generator[Result[T_co, E_co], Any, T_co]) -> Result[T_co, E_co]:
     """Helper for inline synchronous do-notation (generator expressions).
 
     If an 'Err' is encountered, it short-circuits and returns that error.
@@ -1123,7 +1221,7 @@ def do[T, E](gen: Generator[Result[T, E], Any, T]) -> Result[T, E]:
         return Ok(e.value)
 
 
-async def do_async[T, E](gen: AsyncGenerator[Result[T, E], Any]) -> Result[T, E]:
+async def do_async[T_co, E_co](gen: AsyncGenerator[Result[T_co, E_co], Any]) -> Result[T_co, E_co]:
     """Helper for inline asynchronous do-notation (generator expressions).
 
     If an 'Err' is encountered, it short-circuits and returns that error.
@@ -1152,14 +1250,14 @@ async def do_async[T, E](gen: AsyncGenerator[Result[T, E], Any]) -> Result[T, E]
 # --- do-notation style decorators ---
 
 
-def _make_do_wrapper[T, E, **P](
-    func: Callable[P, Do[T, E]],
+def _make_do_wrapper[T_local, E_local, **P](
+    func: Callable[P, Do[T_local, E_local]],
     catch_types: type[Exception] | tuple[type[Exception], ...] | None,
-) -> Callable[P, Result[T, E | Exception]]:
+) -> Callable[P, Result[Any, Any]]:
     """Internal helper to drive the generator-based bind simulation."""
 
     @wraps(func)
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> Result[T, E | Exception]:
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> Result[Any, Any]:
         try:
             gen = func(*args, **kwargs)
             res = next(gen)
@@ -1177,8 +1275,8 @@ def _make_do_wrapper[T, E, **P](
     return wrapper
 
 
-def do_notation[T, E, **P](
-    arg: Callable[P, Do[T, E]] | type[Exception] | tuple[type[Exception], ...] | None = None,
+def do_notation[T_local, E_local, **P](
+    arg: Callable[P, Do[T_local, E_local]] | type[Exception] | tuple[type[Exception], ...] | None = None,
     *,
     catch: type[Exception] | tuple[type[Exception], ...] | None = None,
 ) -> Any:  # noqa: ANN401
@@ -1218,20 +1316,20 @@ def do_notation[T, E, **P](
         return _make_do_wrapper(arg, None)
     catch_final = catch or (arg if isinstance(arg, type | tuple) else None)  # pyright: ignore[reportUnknownVariableType]
 
-    def decorator(func: Callable[P, Do[T, E]]) -> Callable[P, Result[T, E | Exception]]:
+    def decorator(func: Callable[P, Do[T_local, E_local]]) -> Callable[P, Result[T_local, E_local | Exception]]:
         return _make_do_wrapper(func, catch_final)  # type: ignore[arg-type] # pyright: ignore[reportReturnType]
 
     return decorator
 
 
-def _make_async_wrapper[T, E, **P](
-    func: Callable[P, DoAsync[T, E]],
+def _make_async_wrapper[T_local, E_local, **P](
+    func: Callable[P, DoAsync[T_local, E_local]],
     catch_types: type[Exception] | tuple[type[Exception], ...] | None,
-) -> Callable[P, Coroutine[Any, Any, Result[T, E | Exception]]]:
+) -> Callable[P, Coroutine[Any, Any, Result[Any, Any]]]:
     """Internal helper to drive the async generator-based bind simulation."""
 
     @wraps(func)
-    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> Result[T, E | Exception]:
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> Result[Any, Any]:
         try:
             gen = func(*args, **kwargs)
             last_val: Any = None
@@ -1256,8 +1354,8 @@ def _make_async_wrapper[T, E, **P](
     return wrapper
 
 
-def do_notation_async[T, E, **P](
-    arg: Callable[P, DoAsync[T, E]] | type[Exception] | tuple[type[Exception], ...] | None = None,
+def do_notation_async[T_local, E_local, **P](
+    arg: Callable[P, DoAsync[T_local, E_local]] | type[Exception] | tuple[type[Exception], ...] | None = None,
     *,
     catch: type[Exception] | tuple[type[Exception], ...] | None = None,
 ) -> Any:  # noqa: ANN401
@@ -1285,7 +1383,7 @@ def do_notation_async[T, E, **P](
         ...     yield Ok(user.name)
     """
 
-    def decorator(func: Callable[P, DoAsync[T, E]]) -> Any:  # noqa: ANN401
+    def decorator(func: Callable[P, DoAsync[T_local, E_local]]) -> Any:  # noqa: ANN401
         return _make_async_wrapper(func, catch_final)  # type: ignore[arg-type]
 
     if callable(arg) and not isinstance(arg, type | tuple):
@@ -1324,3 +1422,10 @@ def _raise_api_error(method_name: str) -> NoReturn:
             msg = f"Result API Warning: '.{method_name}()' is not part of the supported Result API."
 
     raise AttributeError(msg)
+
+
+OkErr: Final = (Ok, Err)
+"""
+A type to use in `isinstance` checks.
+This is purely for convenience sake, as you could also just write `isinstance(res, Ok | Err)`.
+"""

@@ -7,6 +7,7 @@ from src.result import (
     DoAsync,
     Err,
     Ok,
+    OkErr,
     Result,
     UnwrapError,
     do,
@@ -292,6 +293,37 @@ def test_unsafe_expect() -> None:
         Err("boom").unsafe.expect("fail")
 
 
+def test_unsafe_expect_err() -> None:
+    err = "boom"
+    assert Err(err).unsafe.expect_err("fail") == err
+    with pytest.raises(UnwrapError, match=r"fail: 10"):
+        Ok(10).unsafe.expect_err("fail")
+
+
+def test_covariance() -> None:
+    """Verify that Result is covariant in both T and E."""
+
+    class Animal:
+        pass
+
+    class Dog(Animal):
+        pass
+
+    class Error(Exception):
+        pass
+
+    class SpecificError(Error):
+        pass
+
+    # Ok[Dog] should be assignable to Result[Animal, Error]
+    # This proves covariance because Result[Animal, Error] is Ok[Animal] | Err[Error]
+    res: Result[Animal, Error] = Ok(Dog())
+    assert is_ok(res)
+
+    res_err: Result[Animal, Error] = Err(SpecificError())
+    assert is_err(res_err)
+
+
 @given(st.lists(st.booleans()))
 def test_partition_property(bools: list[bool]) -> None:
     results = [Ok(i) if b else Err(f"err_{i}") for i, b in enumerate(bools)]
@@ -315,6 +347,15 @@ def test_variant_safeguards() -> None:
     with pytest.raises(AttributeError, match=r"is a crashing operation and is isolated in the '.unsafe' namespace"):
         _ = res_ok.unwrap_or_raise(ValueError)  # pyright: ignore[reportAttributeAccessIssue]
 
+    with pytest.raises(AttributeError, match=r"is a crashing operation and is isolated in the '.unsafe' namespace"):
+        _ = res_ok.unwrap_err()  # pyright: ignore[reportAttributeAccessIssue]
+
+    with pytest.raises(AttributeError, match=r"is a crashing operation and is isolated in the '.unsafe' namespace"):
+        _ = res_ok.expect_err("fail")  # pyright: ignore[reportAttributeAccessIssue]
+
+    with pytest.raises(AttributeError, match=r"is a crashing operation and is isolated in the '.unsafe' namespace"):
+        _ = res_err.expect("fail")  # pyright: ignore[reportAttributeAccessIssue]
+
 
 def test_ok_err_conversion() -> None:
     val = 10
@@ -326,6 +367,40 @@ def test_ok_err_conversion() -> None:
 
     assert res_err.ok() is None
     assert res_err.err() == "fail"
+
+
+def test_ok_err_predicates() -> None:
+    val = 10
+    threshold = 5
+    assert Ok(val).is_ok_and(lambda x: x > threshold) is True
+    assert Ok(val).is_ok_and(lambda x: x < threshold) is False
+    assert Err(val).is_ok_and(lambda x: x > threshold) is False
+
+    assert Err(val).is_err_and(lambda x: x > threshold) is True
+    assert Err(val).is_err_and(lambda x: x < threshold) is False
+    assert Ok(val).is_err_and(lambda x: x > threshold) is False
+
+
+@given(st.integers())
+def test_is_ok_and_property(val: int) -> None:
+    res = Ok(val)
+    assert res.is_ok_and(lambda x: x == val) is True
+    assert res.is_ok_and(lambda x: x != val) is False
+    assert Err(val).is_ok_and(lambda _: True) is False
+
+
+@given(st.text())
+def test_is_err_and_property(err: str) -> None:
+    res = Err(err)
+    assert res.is_err_and(lambda e: e == err) is True
+    assert res.is_err_and(lambda e: e != err) is False
+    assert Ok(err).is_err_and(lambda _: True) is False
+
+
+def test_ok_err_constant() -> None:
+    assert isinstance(Ok(1), OkErr)
+    assert isinstance(Err(1), OkErr)
+    assert not isinstance(1, OkErr)
 
 
 def test_namespaced_unsafe() -> None:

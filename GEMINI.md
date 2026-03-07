@@ -16,6 +16,9 @@ A lightweight, single-file library designed to implement the 'Errors as Values' 
 ## Architecture & Logic
 
 - **Functional Primitive (`result.py`)**: The core module housing the `Result` type system (`Ok`, `Err`) and functional utilities.
+- **Dual Generic System (Covariance)**: To ensure true covariance (supporting inheritance like `Dog` -> `Animal`), the library uses a hybrid typing approach:
+    - **Modern PEP 695**: Used for type aliases (`type Result[T, E]`) and standalone utilities for clean, readable API signatures.
+    - **Legacy Generic/TypeVar**: Used for class definitions (`class Ok(Generic[T_co])`) with explicit `covariant=True` parameters. This is necessary because automated variance inference in PEP 695 is often too conservative for functional methods like `.map()` or `.tap()`.
 - **Zero-Escape Safety**: Isolate crashing operations (panics) within the `.unsafe` namespace to ensure that 'unwrapping' is always an intentional, visible choice.
 - **Pragmatic Interop**: Provides 'lifting' tools like `@safe` to seamlessly convert standard Python exception-throwing code into functional containers.
 
@@ -48,6 +51,7 @@ This library exhibits a modern and disciplined Python coding style with influenc
 ## Documentation & Meta-Data Integrity
 
 The project treats inline documentation (docstrings) as **functional code**. 
-- **Absolute Preservation:** All surgical edits (`replace`, `write_file`) **must** preserve existing docstrings, examples, and technical notes with 100% fidelity. 
+- **Absolute Preservation:** All surgical edits (`replace`) **must** preserve existing docstrings, examples, and technical notes with 100% fidelity. 
+- **Tooling Ban:** **NEVER** use `write_file` to modify existing source code files as it can destroy structure and documentation. You **must** use the `replace` tool for all surgical edits. `write_file` is only permitted for creating entirely new files.
 - **Zero Truncation:** Never omit or 'summarize' documentation blocks during a code change. 
 - **Verification:** Before applying a `replace` call, you **must** use `read_file` to verify the exact string content of the surrounding documentation to ensure no data is lost in the transaction.

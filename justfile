@@ -38,6 +38,7 @@ clean:
     rm -rf .mypy_cache/
     rm -rf .pytest_cache/
     rm -rf .ropeproject/
+    rm -rf .hypothesis/
 
 clean-deps:
     rm -rf .venv/

@@ -9,13 +9,13 @@ description = "A production-grade, zero-dependency Result pattern library for mo
 readme = "README.md"
 readme-content-type = "text/markdown"
 keywords = ["result", "monad", "functional", "error-handling", "type-safe"]
-license = { text = "GPL3" }
+license = { text = "GPL-3.0-only" }
 authors = [{ name = "ZuidVolt" }]
 requires-python = ">=3.14"
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.14",
-  "License :: OSI Approved :: GPL3 License",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
   "Operating System :: OS Independent",
   "Typing :: Typed",
 ]

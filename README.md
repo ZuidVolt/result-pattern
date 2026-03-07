@@ -25,6 +25,7 @@ def get_user(user_id: int) -> User | None:
         raise ConnectionError("DB Down")
     return db.query(user_id)
 
+
 try:
     user = get_user(1)
     if user:
@@ -37,11 +38,13 @@ except ConnectionError as e:
 ```python
 from result import Ok, Err, Result, is_ok
 
+
 def get_user(user_id: int) -> Result[User, str]:
     if not database_active():
         return Err("DB Down")
     user = db.query(user_id)
     return Ok(user) if user else Err("Not Found")
+
 
 res = get_user(1)
 if is_ok(res):
@@ -75,10 +78,10 @@ Crashing operations (panics) are strictly isolated in the `.unsafe` namespace. T
 res = Err("critical failure")
 
 # This will raise a helpful AttributeError explaining the safe alternatives
-res.unwrap() 
+res.unwrap()
 
 # Use the unsafe namespace if you specifically need to panic
-res.unsafe.unwrap() # Raises UnwrapError
+res.unsafe.unwrap()  # Raises UnwrapError
 ```
 
 ### Creating & Checking
@@ -88,8 +91,8 @@ from result import Ok, Err, OkErr, is_ok, is_err
 res1 = Ok(200)
 res2 = Err(404)
 
-isinstance(res1, OkErr) # True
-is_ok(res1)             # True (TypeIs narrowing)
+isinstance(res1, OkErr)  # True
+is_ok(res1)  # True (TypeIs narrowing)
 ```
 
 ### Safe Conversion
@@ -97,11 +100,11 @@ Convert to optional values without risking exceptions:
 ```python
 res = Ok(10)
 val = res.ok()  # 10
-err = res.err() # None
+err = res.err()  # None
 
 res_err = Err("fail")
 val = res_err.ok()  # None
-err = res_err.err() # "fail"
+err = res_err.err()  # "fail"
 ```
 
 ### Functional Chaining
@@ -126,12 +129,14 @@ Quickly lift existing exception-throwing code into `Result` containers. Supports
 ```python
 from result import safe
 
+
 @safe(ValueError)
 def parse(s: str) -> int:
     return int(s)
 
-parse("10")           # Ok(10)
-parse("not a number") # Err(ValueError(...))
+
+parse("10")  # Ok(10)
+parse("not a number")  # Err(ValueError(...))
 ```
 
 ### Do-Notation (Monadic Bind)
@@ -140,11 +145,12 @@ Eliminate nested "if is_ok" blocks with imperative-style generator syntax.
 ```python
 from result import do_notation, Ok
 
+
 @do_notation
 def process_data(user_id: int):
-    user = yield fetch_user(user_id)      # Auto-unwraps Ok or short-circuits Err
-    profile = yield fetch_profile(user)   # Type of 'user' is the success value
-    return profile.avatar_url             # Automatically wrapped in Ok
+    user = yield fetch_user(user_id)  # Auto-unwraps Ok or short-circuits Err
+    profile = yield fetch_profile(user)  # Type of 'user' is the success value
+    return profile.avatar_url  # Automatically wrapped in Ok
 ```
 
 ### Async Integration
@@ -152,6 +158,7 @@ First-class support for `async/await` throughout the API:
 ```python
 await res.map_async(async_func)
 await res.and_then_async(async_returning_result)
+
 
 @do_notation_async
 async def workflow():

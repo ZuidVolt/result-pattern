@@ -10,21 +10,12 @@ short-circuiting iteration, and functional pipelining.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Any, cast, overload
 
 from .result import Err, Ok, Result
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
-
-T = TypeVar("T")
-U = TypeVar("U")
-E = TypeVar("E")
-E2 = TypeVar("E2")
-T1 = TypeVar("T1")
-T2 = TypeVar("T2")
-T3 = TypeVar("T3")
-T4 = TypeVar("T4")
 
 
 @overload

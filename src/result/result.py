@@ -52,15 +52,20 @@ from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn, TypeIs, TypeVar
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Iterable
     from types import TracebackType
-    from typing import Protocol
+    from typing import ParamSpec, Protocol
 
-    class _SafeDecoratorOrContext[T, E: Exception](Protocol):
+    P = ParamSpec("P")
+    T_ret = TypeVar("T_ret")
+
+    class _SafeDecoratorOrContext[E: Exception](Protocol):
         @overload
-        def __call__[**P](self, f: Callable[P, Any]) -> Callable[P, Result[Any, E]]: ...  # pyright: ignore[reportOverlappingOverload]
+        def __call__[T_ret, **P](self, f: Callable[P, T_ret]) -> Callable[P, Result[T_ret, E]]: ...  # pyright: ignore[reportOverlappingOverload]
         @overload
-        def __call__[**P](self, f: Callable[P, Coroutine[Any, Any, Any]]) -> Callable[P, Awaitable[Result[Any, E]]]: ...  # pyright: ignore[reportOverlappingOverload]
+        def __call__[T_ret, **P](  # pyright: ignore[reportOverlappingOverload]
+            self, f: Callable[P, Coroutine[Any, Any, T_ret]]
+        ) -> Callable[P, Awaitable[Result[T_ret, E]]]: ...
         def __call__(self, f: Any) -> Any: ...
-        def __enter__(self) -> SafeContext[Any, E]: ...
+        def __enter__[T_ctx](self) -> SafeContext[T_ctx, E]: ...
         def __exit__(
             self,
             exc_type: type[BaseException] | None,
@@ -85,7 +90,7 @@ class SafeContext[T, E: Exception]:
     """
 
     exceptions: type[E] | tuple[type[E], ...]
-    result: Result[Any, E] | None = field(default=None, init=False)
+    result: Result[T, Any] | None = field(default=None, init=False)
 
     def __enter__(self) -> SafeContext[T, E]:
         return self
@@ -678,6 +683,12 @@ class Ok[T_co]:
         """
         return self
 
+    @overload
+    def flatten[R: (Ok[Any] | Err[Any])](self: Ok[R]) -> R: ...  # type: ignore[overload-overlap]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
+
+    @overload
+    def flatten(self) -> Ok[T_co]: ...
+
     def flatten(self) -> Result[Any, Any]:
         """Flatten a nested Result.
 
@@ -696,7 +707,7 @@ class Ok[T_co]:
         """
         val = self._value
         if isinstance(val, Ok | Err):
-            return val  # pyright: ignore[reportUnknownVariableType]
+            return cast("Result[Any, Any]", val)
         return self
 
     def filter[E_local](self, predicate: Callable[[T_co], bool], error: E_local) -> Result[T_co, E_local]:
@@ -796,7 +807,7 @@ class Ok[T_co]:
         """
         return None
 
-    def transpose(self) -> Result[Any, E_co] | None:
+    def transpose(self) -> Result[T_co, E_co] | None:
         """Transpose a Result of an Optional into an Optional of a Result.
 
         Ok(None) becomes None. Ok(Some(v)) becomes Ok(v).
@@ -813,9 +824,9 @@ class Ok[T_co]:
         """
         if self._value is None:
             return None
-        return cast("Result[Any, E_co] | None", self)
+        return cast("Result[T_co, E_co] | None", self)
 
-    def product[U](self, other: Result[U, Any]) -> Result[tuple[T_co, U], Any]:
+    def product[U, E2](self, other: Result[U, E2]) -> Result[tuple[T_co, U], E_co | E2]:  # type: ignore[valid-type]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
         """Combine two results into a result of a tuple (Zip).
 
         Args:
@@ -830,7 +841,7 @@ class Ok[T_co]:
 
         """
         if isinstance(other, Err):
-            return other
+            return cast("Any", other)  # type: ignore[no-any-return] # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
         return Ok[tuple[T_co, U]]((self._value, other._value))
 
 
@@ -1141,7 +1152,12 @@ class Err[E_co]:
         return func(self._error)
 
     def flatten(self) -> Err[E_co]:
-        """Short-circuit the flattening and return self unchanged."""
+        """Short-circuit the flattening and return self unchanged.
+
+        Returns:
+            The current instance unchanged.
+
+        """
         return self
 
     def filter(self, _predicate: Callable[[Any], bool], _error: object) -> Err[E_co]:
@@ -1232,7 +1248,7 @@ class Err[E_co]:
         """
         return self
 
-    def product(self, _other: Result[Any, Any]) -> Err[E_co]:
+    def product[U, E2](self, _other: Result[U, E2]) -> Result[tuple[Any, U], E_co | E2]:
         """Short-circuit the product and return self.
 
         Args:
@@ -1242,7 +1258,7 @@ class Err[E_co]:
             Self unchanged.
 
         """
-        return self
+        return cast("Any", self)  # type: ignore[no-any-return] # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
 
 
 OkErr: Final = (Ok, Err)
@@ -1361,11 +1377,11 @@ def partition[T_local, E_local](results: Iterable[Result[T_local, E_local]]) -> 
     return oks, errs
 
 
-def map2[T1, T2, U, E_local](
-    res1: Result[T1, E_local],
-    res2: Result[T2, E_local],
+def map2[T1, T2, U, E1, E2](
+    res1: Result[T1, E1],
+    res2: Result[T2, E2],
     func: Callable[[T1, T2], U],
-) -> Result[U, E_local]:
+) -> Result[U, E1 | E2]:
     """Apply a binary function to the values of two results (Zipping Map).
 
     If both are Ok, returns Ok(func(val1, val2)).
@@ -1385,9 +1401,9 @@ def map2[T1, T2, U, E_local](
 
     """
     if isinstance(res1, Err):
-        return res1
+        return cast("Result[U, E1 | E2]", res1)
     if isinstance(res2, Err):
-        return res2
+        return cast("Result[U, E1 | E2]", res2)
     return Ok(func(res1._value, res2._value))
 
 
@@ -1439,10 +1455,10 @@ def safe[T, **P](  # pyright: ignore[reportOverlappingOverload]
 
 
 @overload
-def safe[T, E: Exception](  # pyright: ignore[reportOverlappingOverload]
+def safe[E: Exception](  # pyright: ignore[reportOverlappingOverload]
     exceptions: type[E] | tuple[type[E], ...],
     func: None = None,
-) -> _SafeDecoratorOrContext[T, E]: ...
+) -> _SafeDecoratorOrContext[E]: ...
 
 
 def safe[T, **P](  # noqa: C901 # pyright: ignore

@@ -64,7 +64,8 @@ def test_inference_combinators():
     combined = combine(results)
     assert combined == Ok([1, 2, 3])
 
-    p_oks, p_errs = partition([Ok(1), Err("fail")])
+    p_results = [Ok(1), Err("fail")]
+    p_oks, p_errs = partition(p_results)
     val_ok = p_oks[0]
     val_err = p_errs[0]
     assert val_ok == 1
@@ -79,7 +80,8 @@ def test_inference_map2():
 
 def test_inference_any_ok():
     """Verify any_ok correctly infers the success type."""
-    res = any_ok([Err("a"), Ok(100)])
+    any_results = [Err("a"), Ok(100)]
+    res = any_ok(any_results)
     assert res == Ok(100)
 
 
@@ -93,7 +95,8 @@ def test_inference_do_notation():
     res = workflow()
     assert res == Ok(20)
     if is_ok(res):
-        assert res.ok() == 20
+        expected = 20
+        assert res.ok() == expected
 
 
 @pytest.mark.asyncio
@@ -172,12 +175,11 @@ def test_erasure_safe_context_result():
         assert val == 42
 
 
-def test_erasure_nested_flatten():
+def test_erasure_nested_flatten() -> None:
     """Verify type info after flattening."""
     res = Ok(Ok(10)).flatten()
     assert res == Ok(10)
     if is_ok(res):
-        # res.ok() should ideally not be Any here if possible
         val = res.ok()
         assert val == 10
 

@@ -356,7 +356,7 @@ def test_pattern_matching_type_narrowing() -> None:
 def test_transpose_property(val: int | None) -> None:
     """Verify transpose swapping between Result[T | None] and Result[T] | None."""
     res: Result[int | None, str] = Ok(val)
-    transposed: Result[int, Any] | None = res.transpose()
+    transposed: Result[int | None, str] | None = res.transpose()
     if val is None:
         assert transposed is None
     else:

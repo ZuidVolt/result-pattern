@@ -14,6 +14,7 @@
 # pyright: reportArgumentType=false
 
 import operator
+from typing import Any
 
 import pytest
 
@@ -22,6 +23,7 @@ from result import (
     DoAsync,
     Err,
     Ok,
+    Result,
     any_ok,
     combine,
     do_notation,
@@ -177,7 +179,8 @@ def test_erasure_safe_context_result():
 
 def test_erasure_nested_flatten() -> None:
     """Verify type info after flattening."""
-    res = Ok(Ok(10)).flatten()
+    # mypy needs a little help here due to the complex overload
+    res: Result[int, Any] = Ok(Ok(10)).flatten()
     assert res == Ok(10)
     if is_ok(res):
         val = res.ok()

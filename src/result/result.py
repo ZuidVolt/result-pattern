@@ -83,14 +83,14 @@ E = TypeVar("E")
 
 
 @dataclass
-class SafeContext[T, E: Exception]:
+class SafeContext[T, E]:
     """A context manager for localized exception trapping into a Result.
 
     This is returned by calling `safe()` as a context manager.
     """
 
     exceptions: type[E] | tuple[type[E], ...]
-    result: Result[T, Any] | None = field(default=None, init=False)
+    result: Result[T, E] | None = field(default=None, init=False)
 
     def __enter__(self) -> SafeContext[T, E]:
         return self

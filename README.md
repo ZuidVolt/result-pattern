@@ -167,8 +167,3 @@ async def workflow():
 ```
 
 ---
-
-## Testing Philosophy
-The library uses a **Dual-Layered Suite** to ensure maximum reliability:
-1.  **Public API Layer**: 100% type-safe with zero `type: ignore` comments. Ensures a perfect IDE experience for consumers.
-2.  **Internal Layer**: Behavioral tests for educational safeguards and coverage mop-ups, pushing the type system to verify correct failure modes.

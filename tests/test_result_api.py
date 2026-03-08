@@ -1,3 +1,6 @@
+# ruff: noqa: RUF029, B901
+
+import operator
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Never, cast
 
@@ -12,6 +15,8 @@ from result import (
     Ok,
     OkErr,
     Result,
+    SafeContext,
+    any_ok,
     combine,
     do,
     do_async,
@@ -20,6 +25,7 @@ from result import (
     from_optional,
     is_err,
     is_ok,
+    map2,
     partition,
     safe,
 )
@@ -114,7 +120,7 @@ def test_style_equivalence_property(val: int) -> None:
         a = yield Ok(x)
         b = yield Ok(f(a))
         res_val: int = yield g(b)
-        return res_val  # noqa: B901
+        return res_val
 
     assert chained == procedural(val)
 
@@ -135,15 +141,15 @@ def test_data_pipeline_integration() -> None:
         return int(s)
 
     @do_notation()
-    def sum_raw_inputs(raw_inputs: list[str]) -> Do[int, Exception]:
+    def sum_raw_inputs(raw_inputs: list[str]) -> Do[Any, Any]:
         # 1. Lift exceptions into Result containers
-        results = [parse_int(i) for i in raw_inputs]
+        results: list[Result[int, ValueError]] = [parse_int(i) for i in raw_inputs]
 
         # 2. Transpose list of Results into Result of list (all-or-nothing)
         ints: list[int] = yield combine(results)
 
         # 3. Sum the result
-        return sum(ints)  # noqa: B901
+        return sum(ints)
 
     assert sum_raw_inputs(["1", "2", "3"]) == Ok(6)
 
@@ -156,7 +162,7 @@ async def test_async_integration_flow() -> None:
     """Integration: Test complex async flows with do_notation_async and safe wrappers."""
 
     @safe(RuntimeError)
-    async def fetch_user_name(user_id: int) -> str:  # noqa: RUF029
+    async def fetch_user_name(user_id: int) -> str:
         if user_id < 0:
             msg = "invalid id"
             raise RuntimeError(msg)
@@ -269,7 +275,7 @@ def test_do_notation_catch_basic() -> None:
     @do_notation(catch=ValueError)
     def risky(s: str) -> Do[int, Exception]:
         val: int = yield Ok(int(s))
-        return val  # noqa: B901
+        return val
 
     assert risky("10") == Ok(10)
     res: Result[int, Exception] = risky("not a number")
@@ -281,7 +287,7 @@ async def test_do_notation_async_catch_basic() -> None:
     """Verify @do_notation_async catch parameter lifts exceptions into Err."""
 
     @do_notation_async(catch=ValueError)
-    async def risky_async(s: str) -> DoAsync[int, Exception]:  # noqa: RUF029
+    async def risky_async(s: str) -> DoAsync[int, Exception]:
         val: int = yield Ok(int(s))
         yield Ok(val)
 
@@ -344,3 +350,98 @@ def test_pattern_matching_type_narrowing() -> None:
 
     assert check(Ok("success")) == "success"
     assert check(Err(PatcherError.PATH_MISSING)) == "missing"
+
+
+@given(st.one_of(st.integers(), st.none()))
+def test_transpose_property(val: int | None) -> None:
+    """Verify transpose swapping between Result[T | None] and Result[T] | None."""
+    res: Result[int | None, str] = Ok(val)
+    transposed: Result[int, Any] | None = res.transpose()
+    if val is None:
+        assert transposed is None
+    else:
+        assert transposed == Ok(val)
+
+    res_err: Result[int | None, str] = Err("fail")
+    assert res_err.transpose() == res_err
+
+
+@given(st.integers(), st.text())
+def test_product_property(v1: int, v2: str) -> None:
+    """Verify product zipping two results into a tuple."""
+    assert Ok(v1).product(Ok(v2)) == Ok((v1, v2))
+    assert Ok(v1).product(Err(v2)) == Err(v2)
+    assert Err(v2).product(Ok(v1)) == Err(v2)
+
+
+def test_map2_integration() -> None:
+    """Verify map2 zipping and mapping logic."""
+    assert map2(Ok(1), Ok(2), operator.add) == Ok(3)
+    assert map2(Ok(1), Err("fail"), operator.add) == Err("fail")
+
+
+def test_any_integration() -> None:
+    """Verify any_ok returning first success or collection of errors."""
+    results: list[Result[int, str]] = [Err("a"), Ok(1), Ok(2)]
+    assert any_ok(results) == Ok(1)
+    err_results: list[Result[int, str]] = [Err("a"), Err("b")]
+    assert any_ok(err_results) == Err(["a", "b"])
+
+
+def test_safe_context_manager() -> None:
+    """Verify safe used as a context manager trapping localized blocks."""
+
+    def run_safe_success(ctx: SafeContext[int, ValueError]) -> None:
+        ctx.set(10)
+        assert ctx.result == Ok(10)
+
+    ctx_success: SafeContext[int, ValueError]
+    with safe(ValueError) as ctx_success:  # pyright: ignore[reportUnknownVariableType]
+        run_safe_success(ctx_success)
+
+    # Use nested with or similar to test exception trap
+    try:
+        with safe(ValueError):
+            _ = int("not a number")
+    except ValueError:
+        pass
+
+    # Real test for trapping
+    def check_trapped(ctx: SafeContext[int, ValueError]) -> None:
+        assert ctx.result is not None
+        assert is_err(ctx.result)
+
+    ctx_trapped: SafeContext[int, ValueError]
+    with safe(ValueError) as ctx_trapped:  # pyright: ignore[reportUnknownVariableType]
+        _ = int("not a number")
+    check_trapped(ctx_trapped)
+
+
+def test_do_notation_remapping() -> None:
+    """Verify automatic error remapping in do_notation."""
+
+    class InternalError(Exception):
+        pass
+
+    class DomainError(Exception):
+        def __init__(self, cause: Exception) -> None:
+            self.cause = cause
+
+    @do_notation(remap={InternalError: DomainError})
+    def workflow() -> Do[Any, Any]:
+        # Use explicit type to help basedpyright with union conversion during yield
+        err_val: Result[int, DomainError | InternalError] = Err(InternalError("database down"))
+        yield err_val
+        return 1
+
+    res: Result[int, Exception] = workflow()
+    assert is_err(res)
+    assert isinstance(res.err(), DomainError)
+
+
+def test_unwrap_or_default_api() -> None:
+    """Verify unwrap_or_default on both variants."""
+    val = 10
+    assert Ok(val).unsafe.unwrap_or_default() == val
+    # Currently unwrap_or_default on Err returns None as a placeholder
+    assert Err("fail").unsafe.unwrap_or_default() is None

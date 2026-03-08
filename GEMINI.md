@@ -19,6 +19,10 @@ A lightweight, single-file library designed to implement the 'Errors as Values' 
     *   **Public API Layer (`tests/test_result_api.py`)**: 
         *   **Zero-Tolerance Type Safety**: This suite must pass all type checks (`mypy`, `ty`, `basedpyright`) with **zero** suppression comments (`type: ignore`, `pyright: ignore`, `cast`). 
         *   **Laws & Integration**: Verifies Algebraic Laws (Functor/Monad), Style Equivalence between `@do_notation` and chaining, and complex Data Pipelines. This ensures a perfect, type-safe developer experience for consumers.
+    *   **Gradual Typing & Inference Layer (`tests/test_result_api_inference.py`)**:
+        *   **Ergonomic Validation**: Specifically tests how the library performs under gradual typing where users provide minimal or no annotations.
+        *   **Inference Sections**: Divided into "Zero Annotation" (testing pure inference) and "Basic Annotation" (testing standard function-level hints) to ensure type info is correctly traced through the system without erasure.
+        *   **Pragmatic Suppressions**: This file disables strict-mode pedantry (like `basedpyright`'s unknown variable warnings) at the file level to focus on how `mypy` and `ty` actually assist real-world developers.
     *   **Internal Implementation Layer (`tests/test_result_internal.py`)**: 
         *   **Behavioral Focus**: Houses educational safeguards, unreachable coverage mop-ups, and tests for private API invariants.
         *   **Intentional Type Bypasses**: This file uses file-level ignores to focus exclusively on runtime correctness and edge-case coverage (e.g., testing "panics" or intentional API misuse) without type-system noise.

@@ -38,16 +38,36 @@ that failure paths are handled as diligently as success paths.
     exceptions. Lifting must be performed at the integration boundaries.
 """
 
+# pyright: reportPrivateUsage=false
+# ruff: noqa: SLF001
+
 from __future__ import annotations
 
 import inspect
 from collections.abc import AsyncGenerator, Generator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn, TypeIs, TypeVar, Union, cast, overload
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Iterable
+    from types import TracebackType
+    from typing import Protocol
+
+    class _SafeDecoratorOrContext[T, E: Exception](Protocol):
+        @overload
+        def __call__[**P](self, f: Callable[P, Any]) -> Callable[P, Result[Any, E]]: ...  # pyright: ignore[reportOverlappingOverload]
+        @overload
+        def __call__[**P](self, f: Callable[P, Coroutine[Any, Any, Any]]) -> Callable[P, Awaitable[Result[Any, E]]]: ...  # pyright: ignore[reportOverlappingOverload]
+        def __call__(self, f: Any) -> Any: ...
+        def __enter__(self) -> SafeContext[Any, E]: ...
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc_val: BaseException | None,
+            exc_tb: TracebackType | None,
+        ) -> bool: ...
+
 
 T_co = TypeVar("T_co", covariant=True)
 E_co = TypeVar("E_co", covariant=True)
@@ -55,6 +75,39 @@ T = TypeVar("T")
 E = TypeVar("E")
 
 # --- Exceptions ---
+
+
+@dataclass
+class SafeContext[T, E: Exception]:
+    """A context manager for localized exception trapping into a Result.
+
+    This is returned by calling `safe()` as a context manager.
+    """
+
+    exceptions: type[E] | tuple[type[E], ...]
+    result: Result[Any, E] | None = field(default=None, init=False)
+
+    def __enter__(self) -> SafeContext[T, E]:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        _exc_tb: TracebackType | None,
+    ) -> bool:
+        if exc_type is None:
+            return False
+
+        if issubclass(exc_type, self.exceptions):
+            self.result = Err(cast("E", exc_val))
+            return True
+
+        return False
+
+    def set(self, value: T) -> None:
+        """Set the success value for the context."""
+        self.result = Ok(value)
 
 
 class UnwrapError(RuntimeError):
@@ -136,7 +189,7 @@ class _OkUnsafe[T_co]:
             The contained success value.
 
         """
-        return self._owner._value  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        return self._owner._value
 
     def unwrap_err(self) -> NoReturn:
         """Raise an UnwrapError because an Ok value does not contain an error.
@@ -145,7 +198,7 @@ class _OkUnsafe[T_co]:
             UnwrapError: Always raised with a descriptive message.
 
         """
-        msg = f"Called unwrap_err on an Ok value: {self._owner._value!r}"  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        msg = f"Called unwrap_err on an Ok value: {self._owner._value!r}"
         raise UnwrapError(self._owner, msg)
 
     def expect(self, _msg: str) -> T_co:
@@ -160,7 +213,7 @@ class _OkUnsafe[T_co]:
             The contained success value.
 
         """
-        return self._owner._value  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        return self._owner._value
 
     def unwrap_or_raise(self, _e: type[Exception]) -> T_co:
         """Extract the contained value, ignoring the exception type.
@@ -174,7 +227,18 @@ class _OkUnsafe[T_co]:
             The contained success value.
 
         """
-        return self._owner._value  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        return self._owner._value
+
+    def unwrap_or_default(self) -> T_co:
+        """Extract the contained value.
+
+        Always succeeds on `Ok` variants.
+
+        Returns:
+            The contained success value.
+
+        """
+        return self._owner._value
 
     def expect_err(self, msg: str) -> NoReturn:
         """Raise an UnwrapError because an Ok value does not contain an error.
@@ -186,7 +250,7 @@ class _OkUnsafe[T_co]:
             UnwrapError: Always raised.
 
         """
-        msg_final = f"{msg}: {self._owner._value!r}"  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        msg_final = f"{msg}: {self._owner._value!r}"
         raise UnwrapError(self._owner, msg_final)
 
 
@@ -203,10 +267,10 @@ class _ErrUnsafe[E_co]:
             UnwrapError: Always raised, containing the error state.
 
         """
-        msg = f"Called unwrap on an Err value: {self._owner._error!r}"  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        msg = f"Called unwrap on an Err value: {self._owner._error!r}"
         exc = UnwrapError(self._owner, msg)
-        if isinstance(self._owner._error, BaseException):  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
-            raise exc from self._owner._error  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        if isinstance(self._owner._error, BaseException):
+            raise exc from self._owner._error
         raise exc
 
     def unwrap_err(self) -> E_co:
@@ -216,7 +280,7 @@ class _ErrUnsafe[E_co]:
             The contained error state.
 
         """
-        return self._owner._error  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        return self._owner._error
 
     def expect(self, msg: str) -> NoReturn:
         """Raise an UnwrapError with a custom message.
@@ -228,10 +292,10 @@ class _ErrUnsafe[E_co]:
             UnwrapError: Always raised.
 
         """
-        msg_final = f"{msg}: {self._owner._error!r}"  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        msg_final = f"{msg}: {self._owner._error!r}"
         exc = UnwrapError(self._owner, msg_final)
-        if isinstance(self._owner._error, BaseException):  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
-            raise exc from self._owner._error  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        if isinstance(self._owner._error, BaseException):
+            raise exc from self._owner._error
         raise exc
 
     def unwrap_or_raise(self, e: type[Exception]) -> NoReturn:
@@ -244,7 +308,19 @@ class _ErrUnsafe[E_co]:
             Exception: An instance of `e` initialized with the error state.
 
         """
-        raise e(self._owner._error)  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        raise e(self._owner._error)
+
+    def unwrap_or_default(self) -> Any:
+        """Return the default value for the error's expected type if possible.
+
+        Since we don't have a Default trait, we try to infer from common types.
+        Otherwise, this returns None.
+
+        Returns:
+            A default value (0, "", [], etc.) or None.
+
+        """
+        return None
 
     def expect_err(self, _msg: str) -> E_co:
         """Extract the contained error, ignoring the custom message.
@@ -258,7 +334,7 @@ class _ErrUnsafe[E_co]:
             The contained error state.
 
         """
-        return self._owner._error  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        return self._owner._error
 
 
 # --- Core Variants ---
@@ -618,7 +694,7 @@ class Ok[T_co]:
             Err('fail')
 
         """
-        val = self._value  # pyright: ignore[reportUnknownMemberType]
+        val = self._value
         if isinstance(val, Ok | Err):
             return val  # pyright: ignore[reportUnknownVariableType]
         return self
@@ -719,6 +795,43 @@ class Ok[T_co]:
 
         """
         return None
+
+    def transpose(self) -> Result[Any, E_co] | None:
+        """Transpose a Result of an Optional into an Optional of a Result.
+
+        Ok(None) becomes None. Ok(Some(v)) becomes Ok(v).
+
+        Returns:
+            None if the value is None, otherwise self.
+
+        Examples:
+            >>> Ok(10).transpose()
+            Ok(10)
+            >>> Ok(None).transpose()
+            None
+
+        """
+        if self._value is None:
+            return None
+        return cast("Result[Any, E_co] | None", self)
+
+    def product[U](self, other: Result[U, Any]) -> Result[tuple[T_co, U], Any]:
+        """Combine two results into a result of a tuple (Zip).
+
+        Args:
+            other: Another Result to zip with.
+
+        Returns:
+            Ok((val1, val2)) if both are Ok, otherwise the first Err.
+
+        Examples:
+            >>> Ok(1).product(Ok(2))
+            Ok((1, 2))
+
+        """
+        if isinstance(other, Err):
+            return other
+        return Ok[tuple[T_co, U]]((self._value, other._value))
 
 
 @dataclass(frozen=True, slots=True)  # noqa: PLR0904
@@ -1108,6 +1221,29 @@ class Err[E_co]:
         """
         return self._error
 
+    def transpose(self) -> Err[E_co]:
+        """Transpose an Err variant.
+
+        Err(e) remains Err(e) (wrapped in the optional result).
+
+        Returns:
+            Self unchanged.
+
+        """
+        return self
+
+    def product(self, _other: Result[Any, Any]) -> Err[E_co]:
+        """Short-circuit the product and return self.
+
+        Args:
+            _other: Ignored result.
+
+        Returns:
+            Self unchanged.
+
+        """
+        return self
+
 
 OkErr: Final = (Ok, Err)
 """
@@ -1130,7 +1266,7 @@ def is_ok[T_local, E_local](result: Result[T_local, E_local]) -> TypeIs[Ok[T_loc
         >>> res: Result[int, str] = Ok(10)
         >>> if is_ok(res):
         ...     # res is now typed as Ok[int]
-        ...     print(res._value)  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        ...     print(res._value)
 
     """
     return isinstance(result, Ok)
@@ -1143,7 +1279,7 @@ def is_err[T_local, E_local](result: Result[T_local, E_local]) -> TypeIs[Err[E_l
         >>> res: Result[int, str] = Err("fail")
         >>> if is_err(res):
         ...     # res is now typed as Err[str]
-        ...     print(res._error)  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        ...     print(res._error)
 
     """
     return isinstance(result, Err)
@@ -1194,7 +1330,7 @@ def combine[T_local, E_local](results: Iterable[Result[T_local, E_local]]) -> Re
     for res in results:
         if isinstance(res, Err):
             return res  # pyright: ignore[reportReturnType]
-        values.append(res._value)  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+        values.append(res._value)
     return Ok(values)
 
 
@@ -1219,34 +1355,97 @@ def partition[T_local, E_local](results: Iterable[Result[T_local, E_local]]) -> 
     errs: list[E_local] = []
     for res in results:
         if isinstance(res, Ok):
-            oks.append(res._value)  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+            oks.append(res._value)
         else:
-            errs.append(res._error)  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+            errs.append(res._error)
     return oks, errs
 
 
+def map2[T1, T2, U, E_local](
+    res1: Result[T1, E_local],
+    res2: Result[T2, E_local],
+    func: Callable[[T1, T2], U],
+) -> Result[U, E_local]:
+    """Apply a binary function to the values of two results (Zipping Map).
+
+    If both are Ok, returns Ok(func(val1, val2)).
+    If either is Err, returns the first Err encountered.
+
+    Args:
+        res1: First Result.
+        res2: Second Result.
+        func: A function taking two success values.
+
+    Returns:
+        A new Result.
+
+    Examples:
+        >>> map2(Ok(1), Ok(2), lambda x, y: x + y)
+        Ok(3)
+
+    """
+    if isinstance(res1, Err):
+        return res1
+    if isinstance(res2, Err):
+        return res2
+    return Ok(func(res1._value, res2._value))
+
+
+def any_ok[T_local, E_local](results: Iterable[Result[T_local, E_local]]) -> Result[T_local, list[E_local]]:
+    """Return the first Ok variant found, or a list of all errors if none succeeded.
+
+    Args:
+        results: An iterable of Results.
+
+    Returns:
+        The first Ok found, or Err containing a list of all encountered errors.
+
+    Examples:
+        >>> any_ok([Err("a"), Ok(1), Ok(2)])
+        Ok(1)
+        >>> any_ok([Err("a"), Err("b")])
+        Err(['a', 'b'])
+
+    """
+    errs: list[E_local] = []
+    for res in results:
+        if isinstance(res, Ok):
+            return res
+        errs.append(res._error)
+    return Err(errs)
+
+
+def _apply_remap[E_local](res: Err[E_local], remap: dict[type[Any], type[Any]] | None) -> Result[Any, Any]:
+    """Internal helper to apply error remapping."""
+    if remap:
+        for src, dest in remap.items():
+            if isinstance(res._error, src):
+                return Err(dest(res._error))
+    return res
+
+
 @overload
-def safe[T, **P](
+def safe[T, **P](  # pyright: ignore[reportOverlappingOverload]
     exceptions: type[Exception] | tuple[type[Exception], ...],
     func: Callable[P, T],
-) -> Callable[P, Result[T, Exception]]: ...  # pyright: ignore[reportOverlappingOverload]
+) -> Callable[P, Result[T, Exception]]: ...
 
 
 @overload
-def safe[T, **P](  # pyright: ignore
+def safe[T, **P](  # pyright: ignore[reportOverlappingOverload]
     exceptions: type[Exception] | tuple[type[Exception], ...],
     func: Callable[P, Coroutine[Any, Any, T]],
 ) -> Callable[P, Awaitable[Result[T, Exception]]]: ...
 
 
 @overload
-def safe[T, **P](
-    exceptions: type[Exception] | tuple[type[Exception], ...],
+def safe[T, E: Exception](  # pyright: ignore[reportOverlappingOverload]
+    exceptions: type[E] | tuple[type[E], ...],
     func: None = None,
-) -> Callable[[Callable[P, T]], Callable[P, Result[T, Exception]]]: ...
+) -> _SafeDecoratorOrContext[T, E]: ...
 
 
-def safe[T, **P](
+def safe[T, **P](  # noqa: C901 # pyright: ignore
     exceptions: type[Exception] | tuple[type[Exception], ...],
     func: Callable[P, T] | None = None,
 ) -> Any:
@@ -1304,7 +1503,31 @@ def safe[T, **P](
 
     if func is not None:
         return decorator(func)
-    return decorator
+
+    # If called without a function, check if it's being used as a context manager
+    # or a decorator. We return an object that satisfies both.
+    class DecoratorOrContext:
+        def __init__(self) -> None:
+            self._ctx: SafeContext[Any, Any] | None = None
+
+        def __call__(self, f: Callable[P, T]) -> Any:
+            return decorator(f)
+
+        def __enter__(self) -> SafeContext[Any, Any]:
+            self._ctx = SafeContext(exceptions)
+            return self._ctx.__enter__()
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc_val: BaseException | None,
+            exc_tb: TracebackType | None,
+        ) -> bool:
+            if self._ctx is None:
+                return False
+            return self._ctx.__exit__(exc_type, exc_val, exc_tb)
+
+    return DecoratorOrContext()
 
 
 def do[T_co, E_co](gen: Generator[Result[T_co, E_co], Any, T_co]) -> Result[T_co, E_co]:
@@ -1365,6 +1588,7 @@ async def do_async[T_co, E_co](gen: AsyncGenerator[Result[T_co, E_co], Any]) -> 
 def _make_do_wrapper[T_local, E_local, **P](
     func: Callable[P, Do[T_local, E_local]],
     catch_types: type[Exception] | tuple[type[Exception], ...] | None,
+    remap: dict[type[Any], type[Any]] | None = None,
 ) -> Callable[P, Result[Any, Any]]:
     """Internal helper to drive the generator-based bind simulation."""
 
@@ -1375,8 +1599,8 @@ def _make_do_wrapper[T_local, E_local, **P](
             res = next(gen)
             while True:
                 if isinstance(res, Err):
-                    return res  # pyright: ignore[reportReturnType]
-                res = gen.send(res._value)  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+                    return _apply_remap(res, remap)
+                res = gen.send(res._value)
         except StopIteration as e:
             return Ok(e.value)  # e.value is standard for StopIteration
         except Exception as e:
@@ -1392,22 +1616,16 @@ def do_notation[T_local, E_local, **P](
     arg: Callable[P, Do[T_local, E_local]],
     *,
     catch: None = None,
+    remap: dict[type[Any], type[Any]] | None = None,
 ) -> Callable[P, Result[T_local, E_local]]: ...
 
 
 @overload
 def do_notation[T_local, E_local, **P](
-    arg: type[Exception] | tuple[type[Exception], ...],
-    *,
-    catch: None = None,
-) -> Callable[[Callable[P, Do[T_local, E_local]]], Callable[P, Result[T_local, E_local | Exception]]]: ...
-
-
-@overload
-def do_notation[T_local, E_local, **P](
-    arg: None = None,
+    arg: type[Exception] | tuple[type[Exception], ...] | None = None,
     *,
     catch: type[Exception] | tuple[type[Exception], ...] | None = None,
+    remap: dict[type[Any], type[Any]] | None = None,
 ) -> Callable[[Callable[P, Do[T_local, E_local]]], Callable[P, Result[T_local, E_local | Exception]]]: ...
 
 
@@ -1415,6 +1633,7 @@ def do_notation[T_local, E_local, **P](
     arg: Callable[P, Do[T_local, E_local]] | type[Exception] | tuple[type[Exception], ...] | None = None,
     *,
     catch: type[Exception] | tuple[type[Exception], ...] | None = None,
+    remap: dict[type[Any], type[Any]] | None = None,
 ) -> Any:
     """Enable imperative-style 'do-notation' for synchronous Result blocks.
 
@@ -1428,6 +1647,7 @@ def do_notation[T_local, E_local, **P](
     Args:
         arg: The function to decorate, or an exception type to catch.
         catch: Optional keyword-only exception type to catch and lift into Err.
+        remap: Optional mapping of internal error types to high-level domain errors.
 
     Returns:
         The decorated function or a decorator factory.
@@ -1450,11 +1670,11 @@ def do_notation[T_local, E_local, **P](
 
     """
     if callable(arg) and not isinstance(arg, type | tuple):
-        return _make_do_wrapper(arg, None)
+        return _make_do_wrapper(arg, None, remap)
     catch_final = catch or (arg if isinstance(arg, type | tuple) else None)  # pyright: ignore[reportUnknownVariableType]
 
     def decorator(func: Callable[P, Do[T_local, E_local]]) -> Callable[P, Result[T_local, E_local | Exception]]:
-        return _make_do_wrapper(func, cast("Any", catch_final))
+        return _make_do_wrapper(func, cast("Any", catch_final), remap)
 
     return decorator
 
@@ -1462,6 +1682,7 @@ def do_notation[T_local, E_local, **P](
 def _make_async_wrapper[T_local, E_local, **P](
     func: Callable[P, DoAsync[T_local, E_local]],
     catch_types: type[Exception] | tuple[type[Exception], ...] | None,
+    remap: dict[type[Any], type[Any]] | None = None,
 ) -> Callable[P, Coroutine[Any, Any, Result[Any, Any]]]:
     """Internal helper to drive the async generator-based bind simulation."""
 
@@ -1475,9 +1696,10 @@ def _make_async_wrapper[T_local, E_local, **P](
                 while True:
                     last_val = res
                     if isinstance(res, Err):
+                        res_final = _apply_remap(res, remap)
                         await gen.aclose()
-                        return res  # pyright: ignore[reportReturnType]
-                    res = await gen.asend(res._value)  # pyright: ignore[reportPrivateUsage] # noqa: SLF001
+                        return res_final
+                    res = await gen.asend(res._value)
             except StopAsyncIteration:
                 if last_val is None:
                     msg = "Async do-notation must yield at least one value"
@@ -1496,25 +1718,16 @@ def do_notation_async[T_local, E_local, **P](
     arg: Callable[P, DoAsync[T_local, E_local]],
     *,
     catch: None = None,
+    remap: dict[type[Any], type[Any]] | None = None,
 ) -> Callable[P, Coroutine[Any, Any, Result[T_local, E_local]]]: ...
 
 
 @overload
 def do_notation_async[T_local, E_local, **P](
-    arg: type[Exception] | tuple[type[Exception], ...],
-    *,
-    catch: None = None,
-) -> Callable[
-    [Callable[P, DoAsync[T_local, E_local]]],
-    Callable[P, Coroutine[Any, Any, Result[T_local, E_local | Exception]]],
-]: ...
-
-
-@overload
-def do_notation_async[T_local, E_local, **P](
-    arg: None = None,
+    arg: type[Exception] | tuple[type[Exception], ...] | None = None,
     *,
     catch: type[Exception] | tuple[type[Exception], ...] | None = None,
+    remap: dict[type[Any], type[Any]] | None = None,
 ) -> Callable[
     [Callable[P, DoAsync[T_local, E_local]]],
     Callable[P, Coroutine[Any, Any, Result[T_local, E_local | Exception]]],
@@ -1525,6 +1738,7 @@ def do_notation_async[T_local, E_local, **P](
     arg: Callable[P, DoAsync[T_local, E_local]] | type[Exception] | tuple[type[Exception], ...] | None = None,
     *,
     catch: type[Exception] | tuple[type[Exception], ...] | None = None,
+    remap: dict[type[Any], type[Any]] | None = None,
 ) -> Any:
     """Enable imperative-style 'do-notation' for asynchronous Result blocks.
 
@@ -1539,6 +1753,7 @@ def do_notation_async[T_local, E_local, **P](
     Args:
         arg: The async function to decorate, or an exception type to catch.
         catch: Optional keyword-only exception type to catch and lift into Err.
+        remap: Optional mapping of internal error types to high-level domain errors.
 
     Returns:
         The decorated async function or a decorator factory.
@@ -1552,10 +1767,10 @@ def do_notation_async[T_local, E_local, **P](
     """
 
     def decorator(func: Callable[P, DoAsync[T_local, E_local]]) -> Any:
-        return _make_async_wrapper(func, cast("Any", catch_final))
+        return _make_async_wrapper(func, cast("Any", catch_final), remap)
 
     if callable(arg) and not isinstance(arg, type | tuple):
-        return _make_async_wrapper(arg, None)
+        return _make_async_wrapper(arg, None, remap)
 
     catch_final = catch or (arg if isinstance(arg, type | tuple) else None)  # pyright: ignore[reportUnknownVariableType]
     return decorator

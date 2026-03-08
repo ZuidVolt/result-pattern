@@ -1,3 +1,6 @@
+# ruff: noqa: RUF029, PLC2701
+
+
 # mypy: ignore-errors
 # pyright: reportGeneralTypeIssues=false
 # pyright: reportUnknownVariableType=false
@@ -9,6 +12,15 @@
 # pyright: reportUnusedVariable=false
 # pyright: reportUnnecessaryTypeIgnoreComment=false
 # pyright: reportUnnecessaryComparison=false
+# pyright: reportReturnType=false
+# pyright: reportImplicitOverride=false
+# pyright: reportMissingSuperCall=false
+# pyright: reportUnusedParameter=false
+# pyright: reportUnusedCallResult=false
+# pyright: reportUnreachable=false
+# pyright: reportInvalidCast=false
+# pyright: reportDeprecated=false
+# pyright: reportAny=false
 
 from typing import TYPE_CHECKING, Any, Never
 
@@ -29,7 +41,7 @@ from result import (
     is_err,
     safe,
 )
-from result.result import _DoError, _raise_api_error  # noqa: PLC2701
+from result.result import _DoError, _raise_api_error
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -45,7 +57,7 @@ async def test_exhaustive_variant_behavior_property(val: int) -> None:
     res_err = Err(val)
 
     # 1. Functional Async (Direct calls for coverage)
-    async def dummy(x: Any) -> Any:  # noqa: RUF029
+    async def dummy(x: Any) -> Any:
         return x
 
     assert await res_ok.map_async(dummy) == Ok(val)
@@ -117,7 +129,7 @@ async def test_exhaustive_mop_up() -> None:  # noqa: PLR0915
     assert res_err.unsafe.expect_err("msg") == "error"
 
     # 2. Async Short-circuits
-    async def dummy(x: Any) -> Any:  # noqa: RUF029
+    async def dummy(x: Any) -> Any:
         return x
 
     assert await res_err.map_async(dummy) == Err("error")
@@ -125,7 +137,7 @@ async def test_exhaustive_mop_up() -> None:  # noqa: PLR0915
     assert await res_err.and_then_async(lambda x: dummy(Ok(x))) == Err("error")
 
     # 3. Empty Generators
-    async def empty_gen() -> AsyncGenerator[Result[int, str], Any]:  # noqa: RUF029
+    async def empty_gen() -> AsyncGenerator[Result[int, str], Any]:
         if False:
             yield Ok(1)
 
@@ -183,7 +195,7 @@ async def test_exhaustive_mop_up() -> None:  # noqa: PLR0915
     assert is_err(fail_sync())
 
     @do_notation_async(catch=ValueError)
-    async def fail_async() -> DoAsync[Any, Any]:  # noqa: RUF029
+    async def fail_async() -> DoAsync[Any, Any]:
         msg = "boom async"
         raise ValueError(msg)
         yield Ok(1)
@@ -191,7 +203,7 @@ async def test_exhaustive_mop_up() -> None:  # noqa: PLR0915
     assert is_err(await fail_async())
 
     @safe(ValueError)
-    async def safe_async_fail() -> Never:  # noqa: RUF029
+    async def safe_async_fail() -> Never:
         msg = "safe boom"
         raise ValueError(msg)
 
@@ -234,3 +246,32 @@ def test_pattern_matching_ergonomics() -> None:
 
     check_match(Ok(val))
     check_match(Err(err_msg))
+
+
+@pytest.mark.asyncio
+async def test_async_remapping_mop_up() -> None:
+    """Exercise remapping in async do blocks."""
+
+    class InternalError(Exception):
+        pass
+
+    class DomainError(Exception):
+        def __init__(self, cause: Exception) -> None:
+            self.cause = cause
+
+    @do_notation_async(remap={InternalError: DomainError})
+    async def workflow_async() -> DoAsync[Any, Any]:
+        # Result objects are not awaitable, only yielded in async do blocks
+        err_res: Result[int, DomainError | InternalError] = Err(InternalError("fail"))
+        yield err_res
+        yield Ok(1)
+
+    res = await workflow_async()
+    assert is_err(res)
+    assert isinstance(res.err(), DomainError)
+
+
+def test_safe_context_unhandled_exception() -> None:
+    """Verify safe context manager does not swallow unlisted exceptions."""
+    with pytest.raises(KeyError), safe(ValueError) as _:
+        raise KeyError("not caught")

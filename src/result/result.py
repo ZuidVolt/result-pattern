@@ -39,6 +39,7 @@ that failure paths are handled as diligently as success paths.
 """
 
 # pyright: reportPrivateUsage=false
+# pyright: reportOverlappingOverload=false
 # ruff: noqa: SLF001
 
 from __future__ import annotations
@@ -59,9 +60,9 @@ if TYPE_CHECKING:
 
     class _CatchDecoratorOrContext[E: Exception](Protocol):
         @overload
-        def __call__[T_ret, **P](self, f: Callable[P, T_ret]) -> Callable[P, Result[T_ret, E]]: ...  # pyright: ignore[reportOverlappingOverload]
+        def __call__[T_ret, **P](self, f: Callable[P, T_ret]) -> Callable[P, Result[T_ret, E]]: ...
         @overload
-        def __call__[T_ret, **P](  # pyright: ignore[reportOverlappingOverload]
+        def __call__[T_ret, **P](
             self, f: Callable[P, Coroutine[Any, Any, T_ret]]
         ) -> Callable[P, Awaitable[Result[T_ret, E]]]: ...
         def __call__(self, f: Any) -> Any: ...
@@ -1441,29 +1442,71 @@ def _apply_remap[E_local](res: Err[E_local], remap: dict[type[Any], type[Any]] |
 
 
 @overload
-def catch[T, **P](  # pyright: ignore[reportOverlappingOverload]
-    exceptions: type[Exception] | tuple[type[Exception], ...],
+def catch[T, E: Exception, **P](
+    exceptions: type[E],
+    func: Callable[P, T],
+) -> Callable[P, Result[T, E]]: ...
+
+
+@overload
+def catch[T, E: Exception, **P](
+    exceptions: type[E],
+    func: Callable[P, Coroutine[Any, Any, T]],
+) -> Callable[P, Awaitable[Result[T, E]]]: ...
+
+
+@overload
+def catch[E: Exception](
+    exceptions: type[E],
+    func: None = None,
+) -> _CatchDecoratorOrContext[E]: ...
+
+
+@overload
+def catch[T, E1: Exception, E2: Exception, **P](
+    exceptions: tuple[type[E1], type[E2]],
+    func: Callable[P, T],
+) -> Callable[P, Result[T, E1 | E2]]: ...
+
+
+@overload
+def catch[T, E1: Exception, E2: Exception, **P](  # type: ignore[overload-overlap] # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
+    exceptions: tuple[type[E1], type[E2]],
+    func: Callable[P, Coroutine[Any, Any, T]],
+) -> Callable[P, Awaitable[Result[T, E1 | E2]]]: ...
+
+
+@overload
+def catch[E1: Exception, E2: Exception](
+    exceptions: tuple[type[E1], type[E2]],
+    func: None = None,
+) -> _CatchDecoratorOrContext[E1 | E2]: ...
+
+
+@overload
+def catch[T, **P](
+    exceptions: tuple[type[Exception], ...],
     func: Callable[P, T],
 ) -> Callable[P, Result[T, Exception]]: ...
 
 
 @overload
-def catch[T, **P](  # pyright: ignore[reportOverlappingOverload]
-    exceptions: type[Exception] | tuple[type[Exception], ...],
+def catch[T, **P](
+    exceptions: tuple[type[Exception], ...],
     func: Callable[P, Coroutine[Any, Any, T]],
 ) -> Callable[P, Awaitable[Result[T, Exception]]]: ...
 
 
 @overload
-def catch[E: Exception](  # pyright: ignore[reportOverlappingOverload]
-    exceptions: type[E] | tuple[type[E], ...],
+def catch(
+    exceptions: tuple[type[Exception], ...],
     func: None = None,
-) -> _CatchDecoratorOrContext[E]: ...
+) -> _CatchDecoratorOrContext[Exception]: ...
 
 
-def catch[T, **P](  # noqa: C901 # pyright: ignore
-    exceptions: type[Exception] | tuple[type[Exception], ...],
-    func: Callable[P, T] | None = None,
+def catch(  # noqa: C901 # pyright: ignore
+    exceptions: Any,
+    func: Any = None,
 ) -> Any:
     """Execute a function and catch specified exceptions into a Result.
 
@@ -1546,12 +1589,39 @@ def catch[T, **P](  # noqa: C901 # pyright: ignore
     return DecoratorOrContext()
 
 
-def catch_call[T, E: Exception, **P](
-    exceptions: type[E] | tuple[type[E], ...],
-    func: Callable[P, T],
-    *args: P.args,
-    **kwargs: P.kwargs,
-) -> Result[T, E]:
+@overload
+def catch_call[T, E: Exception](
+    exceptions: type[E],
+    func: Callable[..., T],
+    *args: Any,
+    **kwargs: Any,
+) -> Result[T, E]: ...
+
+
+@overload
+def catch_call[T, E1: Exception, E2: Exception](
+    exceptions: tuple[type[E1], type[E2]],
+    func: Callable[..., T],
+    *args: Any,
+    **kwargs: Any,
+) -> Result[T, E1 | E2]: ...
+
+
+@overload
+def catch_call[T](
+    exceptions: tuple[type[Exception], ...],
+    func: Callable[..., T],
+    *args: Any,
+    **kwargs: Any,
+) -> Result[T, Exception]: ...
+
+
+def catch_call(
+    exceptions: Any,
+    func: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
     """Execute a function inline and catch specified exceptions into a Result.
 
     This allows for clean, single-line expression evaluation without needing
@@ -1575,7 +1645,7 @@ def catch_call[T, E: Exception, **P](
     try:
         return Ok(func(*args, **kwargs))
     except exceptions as e:
-        return Err(cast("E", e))  # type: ignore[redundant-cast]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
+        return Err(e)
 
 
 def do[T_co, E_co](gen: Generator[Result[T_co, E_co], Any, T_co]) -> Result[T_co, E_co]:

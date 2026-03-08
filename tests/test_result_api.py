@@ -465,6 +465,9 @@ def test_catch_call_inline() -> None:
     assert catch_call(json.JSONDecodeError, json.loads, '{"a": 1}') == Ok({"a": 1})
     assert is_err(catch_call(json.JSONDecodeError, json.loads, "invalid"))
 
+    # Test tuple of exceptions
+    assert is_err(catch_call((json.JSONDecodeError, TypeError), json.loads, 123))
+
 
 def test_partition_exceptions_api() -> None:
     """Verify partition_exceptions correctly separating values from exceptions."""

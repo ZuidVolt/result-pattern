@@ -234,6 +234,12 @@ def test_inference_catch_call() -> None:
         val = res.ok()
         assert val == 123
 
+    # Tuple of exceptions inference
+    res2 = catch_call((ValueError, TypeError), int, "123")
+    if is_err(res2):
+        err = res2.err()
+        assert isinstance(err, ValueError | TypeError)
+
 
 def test_inference_partition_exceptions():
     """Verify type tracing through partition_exceptions."""

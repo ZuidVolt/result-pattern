@@ -47,7 +47,7 @@ import inspect
 from collections.abc import AsyncGenerator, Generator
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn, TypeIs, TypeVar, Union, cast, overload
+from typing import TYPE_CHECKING, Any, Final, Literal, Never, TypeIs, TypeVar, Union, cast, overload
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Iterable
@@ -196,7 +196,7 @@ class _OkUnsafe[T_co]:
         """
         return self._owner._value
 
-    def unwrap_err(self) -> NoReturn:
+    def unwrap_err(self) -> Never:
         """Raise an UnwrapError because an Ok value does not contain an error.
 
         Raises:
@@ -245,7 +245,7 @@ class _OkUnsafe[T_co]:
         """
         return self._owner._value
 
-    def expect_err(self, msg: str) -> NoReturn:
+    def expect_err(self, msg: str) -> Never:
         """Raise an UnwrapError because an Ok value does not contain an error.
 
         Args:
@@ -265,7 +265,7 @@ class _ErrUnsafe[E_co]:
 
     _owner: Err[E_co]
 
-    def unwrap(self) -> NoReturn:
+    def unwrap(self) -> Never:
         """Raise an UnwrapError because an error cannot be unwrapped.
 
         Raises:
@@ -287,7 +287,7 @@ class _ErrUnsafe[E_co]:
         """
         return self._owner._error
 
-    def expect(self, msg: str) -> NoReturn:
+    def expect(self, msg: str) -> Never:
         """Raise an UnwrapError with a custom message.
 
         Args:
@@ -303,7 +303,7 @@ class _ErrUnsafe[E_co]:
             raise exc from self._owner._error
         raise exc
 
-    def unwrap_or_raise(self, e: type[Exception]) -> NoReturn:
+    def unwrap_or_raise(self, e: type[Exception]) -> Never:
         """Raise a custom exception with the error state.
 
         Args:
@@ -444,7 +444,7 @@ class Ok[T_co]:
         """
         return False
 
-    def __getattr__(self, name: str) -> NoReturn:
+    def __getattr__(self, name: str) -> Never:
         """Educational runtime safeguard against common API mistakes."""
         if name in {
             "value",
@@ -464,35 +464,35 @@ class Ok[T_co]:
 
     # --- error for incorrect API access ---
 
-    def unwrap(self) -> NoReturn:
+    def unwrap(self) -> Never:
         """Root-level unwrap is disabled. Use .unsafe.unwrap() instead."""
         _raise_api_error("unwrap")
 
-    def unwrap_err(self) -> NoReturn:
+    def unwrap_err(self) -> Never:
         """Root-level unwrap_err is disabled. Use .unsafe.unwrap_err() instead."""
         _raise_api_error("unwrap_err")
 
-    def expect(self, _msg: str) -> NoReturn:
+    def expect(self, _msg: str) -> Never:
         """Root-level expect is disabled. Use .unsafe.expect() instead."""
         _raise_api_error("expect")
 
-    def expect_err(self, _msg: str) -> NoReturn:
+    def expect_err(self, _msg: str) -> Never:
         """Root-level expect_err is disabled. Use .unsafe.expect_err() instead."""
         _raise_api_error("expect_err")
 
-    def unwrap_or_raise(self, _e: type[Exception]) -> NoReturn:
+    def unwrap_or_raise(self, _e: type[Exception]) -> Never:
         """Root-level unwrap_or_raise is disabled. Use .unsafe.unwrap_or_raise() instead."""
         _raise_api_error("unwrap_or_raise")
 
-    def inspect(self, _func: Callable[[Any], Any]) -> NoReturn:
+    def inspect(self, _func: Callable[[Any], Any]) -> Never:
         """Root-level inspect is disabled. Use .tap() instead."""
         _raise_api_error("inspect")
 
-    def inspect_async(self, _func: Callable[[Any], Awaitable[Any]]) -> NoReturn:
+    def inspect_async(self, _func: Callable[[Any], Awaitable[Any]]) -> Never:
         """Root-level inspect_async is disabled. Use .tap_async() instead."""
         _raise_api_error("inspect_async")
 
-    def inspect_err(self, _func: Callable[[Any], Any]) -> NoReturn:
+    def inspect_err(self, _func: Callable[[Any], Any]) -> Never:
         """Root-level inspect_err is disabled. Use .tap_err() instead."""
         _raise_api_error("inspect_err")
 
@@ -873,12 +873,12 @@ class Err[E_co]:
         """
         object.__setattr__(self, "_error", error)
 
-    def __iter__(self) -> Generator[Result[Any, E_co], Any, NoReturn]:
+    def __iter__(self) -> Generator[Result[Any, E_co], Any, Never]:
         """Allow use in generator expressions for do-notation."""
         raise _DoError(self)
         yield self  # should be UNREACHABLE
 
-    async def __aiter__(self) -> AsyncGenerator[NoReturn, Any]:
+    async def __aiter__(self) -> AsyncGenerator[Never, Any]:
         """Allow use in async generator expressions for do-notation."""
         raise _DoError(self)
         yield self  # should be UNREACHABLE
@@ -945,7 +945,7 @@ class Err[E_co]:
         """
         return predicate(self._error)
 
-    def __getattr__(self, name: str) -> NoReturn:
+    def __getattr__(self, name: str) -> Never:
         """Educational runtime safeguard against common API mistakes."""
         if name in {
             "value",
@@ -965,35 +965,35 @@ class Err[E_co]:
 
     # --- error for incorrect API access ---
 
-    def unwrap(self) -> NoReturn:
+    def unwrap(self) -> Never:
         """Root-level unwrap is disabled. Use .unsafe.unwrap() instead."""
         _raise_api_error("unwrap")
 
-    def unwrap_err(self) -> NoReturn:
+    def unwrap_err(self) -> Never:
         """Root-level unwrap_err is disabled. Use .unsafe.unwrap_err() instead."""
         _raise_api_error("unwrap_err")
 
-    def expect(self, _msg: str) -> NoReturn:
+    def expect(self, _msg: str) -> Never:
         """Root-level expect is disabled. Use .unsafe.expect() instead."""
         _raise_api_error("expect")
 
-    def expect_err(self, _msg: str) -> NoReturn:
+    def expect_err(self, _msg: str) -> Never:
         """Root-level expect_err is disabled. Use .unsafe.expect_err() instead."""
         _raise_api_error("expect_err")
 
-    def unwrap_or_raise(self, _e: type[Exception]) -> NoReturn:
+    def unwrap_or_raise(self, _e: type[Exception]) -> Never:
         """Root-level unwrap_or_raise is disabled. Use .unsafe.unwrap_or_raise() instead."""
         _raise_api_error("unwrap_or_raise")
 
-    def inspect(self, _func: Callable[[Any], Any]) -> NoReturn:
+    def inspect(self, _func: Callable[[Any], Any]) -> Never:
         """Root-level inspect is disabled. Use .tap() instead."""
         _raise_api_error("inspect")
 
-    def inspect_async(self, _func: Callable[[Any], Awaitable[Any]]) -> NoReturn:
+    def inspect_async(self, _func: Callable[[Any], Awaitable[Any]]) -> Never:
         """Root-level inspect_async is disabled. Use .tap_async() instead."""
         _raise_api_error("inspect_async")
 
-    def inspect_err(self, _func: Callable[[Any], Any]) -> NoReturn:
+    def inspect_err(self, _func: Callable[[Any], Any]) -> Never:
         """Root-level inspect_err is disabled. Use .tap_err() instead."""
         _raise_api_error("inspect_err")
 
@@ -1795,7 +1795,7 @@ def do_notation_async[T_local, E_local, **P](
 # --- Internal Teaching Helper ---
 
 
-def _raise_api_error(method_name: str) -> NoReturn:
+def _raise_api_error(method_name: str) -> Never:
     """Raise a descriptive error to guide users to the correct API."""
     match method_name:
         case "value" | "error":

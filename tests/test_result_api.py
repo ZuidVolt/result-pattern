@@ -1,5 +1,6 @@
 # ruff: noqa: RUF029, B901
 
+import json
 import operator
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Never, cast
@@ -9,14 +10,16 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from result import (
+    CatchContext,
     Do,
     DoAsync,
     Err,
     Ok,
     OkErr,
     Result,
-    SafeContext,
     any_ok,
+    catch,
+    catch_call,
     combine,
     do,
     do_async,
@@ -27,7 +30,16 @@ from result import (
     is_ok,
     map2,
     partition,
-    safe,
+)
+from result.combinators import (
+    add_context,
+    ensure,
+    flow,
+    partition_exceptions,
+    succeeds,
+    traverse,
+    try_fold,
+    validate,
 )
 
 if TYPE_CHECKING:
@@ -136,7 +148,7 @@ def test_data_pipeline_integration() -> None:
     processed imperatively.
     """
 
-    @safe(ValueError)
+    @catch(ValueError)
     def parse_int(s: str) -> int:
         return int(s)
 
@@ -159,10 +171,11 @@ def test_data_pipeline_integration() -> None:
 
 @pytest.mark.asyncio
 async def test_async_integration_flow() -> None:
-    """Integration: Test complex async flows with do_notation_async and safe wrappers."""
+    """Integration: Test complex async flows with do_notation_async and catch wrappers."""
 
-    @safe(RuntimeError)
-    async def fetch_user_name(user_id: int) -> str:
+    @catch(RuntimeError)
+    async def fetch_user_name(user_id: int) -> str:  # noqa: RUF029
+
         if user_id < 0:
             msg = "invalid id"
             raise RuntimeError(msg)
@@ -388,31 +401,31 @@ def test_any_integration() -> None:
     assert any_ok(err_results) == Err(["a", "b"])
 
 
-def test_safe_context_manager() -> None:
-    """Verify safe used as a context manager trapping localized blocks."""
+def test_catch_context_manager() -> None:
+    """Verify catch used as a context manager trapping localized blocks."""
 
-    def run_safe_success(ctx: SafeContext[int, ValueError]) -> None:
+    def run_catch_success(ctx: CatchContext[int, ValueError]) -> None:
         ctx.set(10)
         assert ctx.result == Ok(10)
 
-    ctx_success: SafeContext[int, ValueError]
-    with safe(ValueError) as ctx_success:  # pyright: ignore[reportUnknownVariableType]
-        run_safe_success(ctx_success)
+    ctx_success: CatchContext[int, ValueError]
+    with catch(ValueError) as ctx_success:  # pyright: ignore[reportUnknownVariableType]
+        run_catch_success(ctx_success)
 
     # Use nested with or similar to test exception trap
     try:
-        with safe(ValueError):
+        with catch(ValueError):
             _ = int("not a number")
     except ValueError:
         pass
 
     # Real test for trapping
-    def check_trapped(ctx: SafeContext[int, ValueError]) -> None:
+    def check_trapped(ctx: CatchContext[int, ValueError]) -> None:
         assert ctx.result is not None
         assert is_err(ctx.result)
 
-    ctx_trapped: SafeContext[int, ValueError]
-    with safe(ValueError) as ctx_trapped:  # pyright: ignore[reportUnknownVariableType]
+    ctx_trapped: CatchContext[int, ValueError]
+    with catch(ValueError) as ctx_trapped:  # pyright: ignore[reportUnknownVariableType]
         _ = int("not a number")
     check_trapped(ctx_trapped)
 
@@ -445,3 +458,101 @@ def test_unwrap_or_default_api() -> None:
     assert Ok(val).unsafe.unwrap_or_default() == val
     # Currently unwrap_or_default on Err returns None as a placeholder
     assert Err("fail").unsafe.unwrap_or_default() is None
+
+
+def test_catch_call_inline() -> None:
+    """Verify catch_call executing functions inline with exception trapping."""
+    assert catch_call(json.JSONDecodeError, json.loads, '{"a": 1}') == Ok({"a": 1})
+    assert is_err(catch_call(json.JSONDecodeError, json.loads, "invalid"))
+
+
+def test_partition_exceptions_api() -> None:
+    """Verify partition_exceptions correctly separating values from exceptions."""
+    items: list[int | Exception] = [1, ValueError("a"), 2, KeyError("b")]
+    oks: list[Ok[int]]
+    errs: list[Err[Exception]]
+    oks, errs = cast("tuple[list[Ok[int]], list[Err[Exception]]]", partition_exceptions(items))  # pyright: ignore[reportUnnecessaryCast]
+    assert oks == [Ok(1), Ok(2)]
+    expected_err_count = 2
+    assert len(errs) == expected_err_count
+    assert isinstance(errs[0].err(), ValueError)
+
+
+# --- Combinators API (Compiler Pipeline Theme) ---
+
+
+def test_validate_accumulation() -> None:
+    """Verify validate accumulates multiple errors or returns tuple of values."""
+
+    def typecheck(val: Any) -> Result[str, str]:
+        return Ok("int") if isinstance(val, int) else Err(f"Not an int: {val}")
+
+    # Success case: All Ok -> Ok(tuple)
+    res = validate(typecheck(1), typecheck(2))
+    assert res == Ok(("int", "int"))
+
+    # Failure case: Multiple Errs -> Err(list)
+    res_err = validate(typecheck(1), typecheck("a"), typecheck("b"))
+    assert res_err == Err(["Not an int: a", "Not an int: b"])
+
+
+def test_traverse_fast_fail() -> None:
+    """Verify traverse maps over list but fails fast on first error."""
+
+    def parse_stmt(s: str) -> Result[str, str]:
+        return Ok(f"AST({s})") if s != "!" else Err("Syntax Error")
+
+    assert traverse(["a", "b"], parse_stmt) == Ok(["AST(a)", "AST(b)"])
+    assert traverse(["a", "!", "b"], parse_stmt) == Err("Syntax Error")
+
+
+def test_try_fold_symbol_table() -> None:
+    """Verify try_fold reduction with fallible steps."""
+
+    def add_to_table(table: dict[str, str], pair: tuple[str, str]) -> Result[dict[str, str], str]:
+        name, type_ = pair
+        if name in table:
+            return Err(f"Duplicate: {name}")
+        table[name] = type_
+        return Ok(table)
+
+    initial: dict[str, str] = {}
+    items = [("x", "int"), ("y", "float")]
+    assert try_fold(items, initial, add_to_table) == Ok({"x": "int", "y": "float"})
+
+    bad_items = [("x", "int"), ("x", "float")]
+    assert is_err(try_fold(bad_items, initial, add_to_table))
+
+
+def test_ensure_guards() -> None:
+    """Verify ensure lifting booleans into Results."""
+    expected_sum = 2
+    incorrect_sum = 3
+    assert ensure(expected_sum == 1 + 1, "logic fail") == Ok(None)
+    assert ensure(incorrect_sum == 1 + 1, "math fail") == Err("math fail")
+
+
+def test_add_context_breadcrumbs() -> None:
+    """Verify add_context enriching error payloads."""
+    res: Result[int, str] = Err("raw error")
+    assert add_context(res, "In main") == Err("In main: raw error")
+    assert add_context(Ok(1), "ignored") == Ok(1)
+
+
+def test_flow_pipeline() -> None:
+    """Verify flow pipes data through sequential fallible steps."""
+
+    def inc(x: int) -> Result[int, str]:
+        return Ok(x + 1)
+
+    def to_str(x: int) -> Result[str, str]:
+        return Ok(str(x))
+
+    assert flow(10, inc, to_str) == Ok("11")
+    assert flow(10, lambda _: Err("fail"), to_str) == Err("fail")
+
+
+def test_succeeds_filtering() -> None:
+    """Verify succeeds extracts only Ok values."""
+    results: list[Result[int, str]] = [Ok(1), Err("fail"), Ok(2)]
+    assert succeeds(results) == [1, 2]

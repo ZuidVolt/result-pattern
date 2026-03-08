@@ -23,7 +23,7 @@ that failure paths are handled as diligently as success paths.
 4.  **Zero-Escape Safety**: Isolate crashing operations (panics) within the
     `.unsafe` namespace to ensure that 'unwrapping' is always an intentional,
     visible choice.
-5.  **Pragmatic Interop**: Provide 'lifting' tools like `@safe` to seamlessly
+5.  **Pragmatic Interop**: Provide 'lifting' tools like `@catch` to seamlessly
     convert standard Python exception-throwing code into functional containers.
 
 ## Limitations & Constraints
@@ -57,7 +57,7 @@ if TYPE_CHECKING:
     P = ParamSpec("P")
     T_ret = TypeVar("T_ret")
 
-    class _SafeDecoratorOrContext[E: Exception](Protocol):
+    class _CatchDecoratorOrContext[E: Exception](Protocol):
         @overload
         def __call__[T_ret, **P](self, f: Callable[P, T_ret]) -> Callable[P, Result[T_ret, E]]: ...  # pyright: ignore[reportOverlappingOverload]
         @overload
@@ -65,7 +65,7 @@ if TYPE_CHECKING:
             self, f: Callable[P, Coroutine[Any, Any, T_ret]]
         ) -> Callable[P, Awaitable[Result[T_ret, E]]]: ...
         def __call__(self, f: Any) -> Any: ...
-        def __enter__[T_ctx](self) -> SafeContext[T_ctx, E]: ...
+        def __enter__[T_ctx](self) -> CatchContext[T_ctx, E]: ...
         def __exit__(
             self,
             exc_type: type[BaseException] | None,
@@ -83,16 +83,16 @@ E = TypeVar("E")
 
 
 @dataclass
-class SafeContext[T, E]:
+class CatchContext[T, E]:
     """A context manager for localized exception trapping into a Result.
 
-    This is returned by calling `safe()` as a context manager.
+    This is returned by calling `catch()` as a context manager.
     """
 
     exceptions: type[E] | tuple[type[E], ...]
     result: Result[T, E] | None = field(default=None, init=False)
 
-    def __enter__(self) -> SafeContext[T, E]:
+    def __enter__(self) -> CatchContext[T, E]:
         return self
 
     def __exit__(
@@ -1441,27 +1441,27 @@ def _apply_remap[E_local](res: Err[E_local], remap: dict[type[Any], type[Any]] |
 
 
 @overload
-def safe[T, **P](  # pyright: ignore[reportOverlappingOverload]
+def catch[T, **P](  # pyright: ignore[reportOverlappingOverload]
     exceptions: type[Exception] | tuple[type[Exception], ...],
     func: Callable[P, T],
 ) -> Callable[P, Result[T, Exception]]: ...
 
 
 @overload
-def safe[T, **P](  # pyright: ignore[reportOverlappingOverload]
+def catch[T, **P](  # pyright: ignore[reportOverlappingOverload]
     exceptions: type[Exception] | tuple[type[Exception], ...],
     func: Callable[P, Coroutine[Any, Any, T]],
 ) -> Callable[P, Awaitable[Result[T, Exception]]]: ...
 
 
 @overload
-def safe[E: Exception](  # pyright: ignore[reportOverlappingOverload]
+def catch[E: Exception](  # pyright: ignore[reportOverlappingOverload]
     exceptions: type[E] | tuple[type[E], ...],
     func: None = None,
-) -> _SafeDecoratorOrContext[E]: ...
+) -> _CatchDecoratorOrContext[E]: ...
 
 
-def safe[T, **P](  # noqa: C901 # pyright: ignore
+def catch[T, **P](  # noqa: C901 # pyright: ignore
     exceptions: type[Exception] | tuple[type[Exception], ...],
     func: Callable[P, T] | None = None,
 ) -> Any:
@@ -1477,7 +1477,7 @@ def safe[T, **P](  # noqa: C901 # pyright: ignore
         A Result if `func` was provided, otherwise a decorator.
 
     Examples:
-        >>> @safe(ValueError)
+        >>> @catch(ValueError)
         ... def parse(s: str) -> int:
         ...     return int(s)
         >>> parse("10")
@@ -1485,7 +1485,7 @@ def safe[T, **P](  # noqa: C901 # pyright: ignore
         >>> parse("not an int")
         Err(ValueError(...))
 
-        >>> safe(ValueError, int, "10")
+        >>> catch(ValueError, int, "10")
         Ok(10)
 
     """
@@ -1524,13 +1524,13 @@ def safe[T, **P](  # noqa: C901 # pyright: ignore
     # or a decorator. We return an object that satisfies both.
     class DecoratorOrContext:
         def __init__(self) -> None:
-            self._ctx: SafeContext[Any, Any] | None = None
+            self._ctx: CatchContext[Any, Any] | None = None
 
         def __call__(self, f: Callable[P, T]) -> Any:
             return decorator(f)
 
-        def __enter__(self) -> SafeContext[Any, Any]:
-            self._ctx = SafeContext(exceptions)
+        def __enter__(self) -> CatchContext[Any, Any]:
+            self._ctx = CatchContext(exceptions)
             return self._ctx.__enter__()
 
         def __exit__(
@@ -1544,6 +1544,38 @@ def safe[T, **P](  # noqa: C901 # pyright: ignore
             return self._ctx.__exit__(exc_type, exc_val, exc_tb)
 
     return DecoratorOrContext()
+
+
+def catch_call[T, E: Exception, **P](
+    exceptions: type[E] | tuple[type[E], ...],
+    func: Callable[P, T],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> Result[T, E]:
+    """Execute a function inline and catch specified exceptions into a Result.
+
+    This allows for clean, single-line expression evaluation without needing
+    to define a new function or open a context manager block.
+
+    Args:
+        exceptions: An exception type or tuple of types to catch.
+        func: The function to execute.
+        *args: Positional arguments for the function.
+        **kwargs: Keyword arguments for the function.
+
+    Returns:
+        Ok(value) if successful, Err(exception) if a specified exception was raised.
+
+    Examples:
+        >>> import json
+        >>> catch_call(json.JSONDecodeError, json.loads, '{"key": "value"}')
+        Ok({'key': 'value'})
+
+    """
+    try:
+        return Ok(func(*args, **kwargs))
+    except exceptions as e:
+        return Err(cast("E", e))  # type: ignore[redundant-cast]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
 
 
 def do[T_co, E_co](gen: Generator[Result[T_co, E_co], Any, T_co]) -> Result[T_co, E_co]:

@@ -25,6 +25,8 @@ from result import (
     Ok,
     Result,
     any_ok,
+    catch,
+    catch_call,
     combine,
     do_notation,
     do_notation_async,
@@ -32,7 +34,13 @@ from result import (
     is_ok,
     map2,
     partition,
-    safe,
+)
+from result.combinators import (
+    flow,
+    partition_exceptions,
+    traverse,
+    try_fold,
+    validate,
 )
 
 # --- Section 1: Zero Annotations (Pure Gradual Inference) ---
@@ -118,8 +126,8 @@ def test_inference_transpose():
     assert transposed == Ok(10)
 
 
-def test_inference_safe_decorator():
-    @safe(ValueError)
+def test_inference_catch_decorator():
+    @catch(ValueError)
     def parse(s):
         return int(s)
 
@@ -153,8 +161,8 @@ async def test_annotated_async_do_notation() -> None:
     assert await workflow_async() == Ok(15)
 
 
-def test_annotated_safe() -> None:
-    @safe(ValueError)
+def test_annotated_catch() -> None:
+    @catch(ValueError)
     def parse(s: str) -> int:
         return int(s)
 
@@ -165,9 +173,9 @@ def test_annotated_safe() -> None:
 # --- Section 3: Advanced Inference & Detection ---
 
 
-def test_erasure_safe_context_result():
-    """Verify that SafeContext preserves types."""
-    with safe(ValueError) as ctx:
+def test_erasure_catch_context_result():
+    """Verify that CatchContext preserves types."""
+    with catch(ValueError) as ctx:
         ctx.set(42)
 
     final_res = ctx.result
@@ -215,3 +223,70 @@ def test_inference_complex_do_loop():
 
     res = sum_even_numbers([1, 2, 3, 4])
     assert res == Ok(6)
+
+
+def test_inference_catch_call() -> None:
+    """Verify inference for inline catch_call."""
+    res = catch_call(ValueError, int, "123")
+    assert res == Ok(123)
+    if is_ok(res):
+        # Checker should trace val as int
+        val = res.ok()
+        assert val == 123
+
+
+def test_inference_partition_exceptions():
+    """Verify type tracing through partition_exceptions."""
+    items = [1, ValueError("a")]
+    # Should be (list[Ok[int]], list[Err[ValueError]])
+    oks, errs = partition_exceptions(items)
+
+    val = oks[0].ok()
+    assert val == 1
+
+    err = errs[0].err()
+    assert isinstance(err, ValueError)
+
+
+# --- Section 4: Combinator Inference ---
+
+
+def test_inference_traverse():
+    """Verify type tracing through traverse."""
+    items = [1, 2, 3]
+    # int -> Result[str, Any]
+    res = traverse(items, lambda x: Ok(str(x)))
+    assert res == Ok(["1", "2", "3"])
+    if is_ok(res):
+        # Should know it is list[str]
+        val = res.ok()
+        assert val[0] == "1"
+
+
+def test_inference_try_fold():
+    """Verify type tracing through try_fold."""
+    items = [1, 2, 3]
+    # (int, int) -> Result[int, Any]
+    res = try_fold(items, 0, lambda acc, x: Ok(acc + x))
+    assert res == Ok(6)
+
+
+def test_inference_validate_overload():
+    """Verify tuple preservation in validate overloads."""
+    r1 = Ok(1)
+    r2 = Ok("a")
+    res = validate(r1, r2)
+    assert res == Ok((1, "a"))
+    if is_ok(res):
+        val = res.ok()
+        # Should be able to unpack specifically
+        v1, v2 = val
+        assert v1 == 1
+        assert v2 == "a"
+
+
+def test_inference_flow_overload():
+    """Verify type preservation in flow overloads."""
+    # str -> int -> list[int]
+    res = flow("10", lambda s: Ok(int(s)), lambda i: Ok([i]))
+    assert res == Ok([10])

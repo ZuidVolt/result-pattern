@@ -22,6 +22,7 @@
 # pyright: reportDeprecated=false
 # pyright: reportAny=false
 
+import operator
 from typing import TYPE_CHECKING, Any, Never
 
 import pytest
@@ -35,11 +36,18 @@ from result import (
     Ok,
     Result,
     UnwrapError,
+    catch,
+    catch_call,
     do_async,
     do_notation,
     do_notation_async,
     is_err,
-    safe,
+)
+from result.combinators import (
+    flow,
+    partition_exceptions,
+    traverse,
+    validate,
 )
 from result.result import _DoError, _raise_api_error
 
@@ -202,12 +210,12 @@ async def test_exhaustive_mop_up() -> None:  # noqa: PLR0915
 
     assert is_err(await fail_async())
 
-    @safe(ValueError)
-    async def safe_async_fail() -> Never:
+    @catch(ValueError)
+    async def catch_async_fail() -> Never:
         msg = "safe boom"
         raise ValueError(msg)
 
-    assert is_err(await safe_async_fail())
+    assert is_err(await catch_async_fail())
 
 
 def test_api_error_default() -> None:
@@ -271,7 +279,70 @@ async def test_async_remapping_mop_up() -> None:
     assert isinstance(res.err(), DomainError)
 
 
-def test_safe_context_unhandled_exception() -> None:
-    """Verify safe context manager does not swallow unlisted exceptions."""
-    with pytest.raises(KeyError), safe(ValueError) as _:
+def test_catch_context_unhandled_exception() -> None:
+    """Verify catch context manager does not swallow unlisted exceptions."""
+    with pytest.raises(KeyError), catch(ValueError) as _:
         raise KeyError("not caught")
+
+
+# --- Combinators Internal Mop-up ---
+
+
+def test_validate_internal_logic() -> None:
+    """Exercise complex validation error paths."""
+    res = validate(Ok(1), Err("e1"), Ok(2), Err("e2"))
+    assert res == Err(["e1", "e2"])
+
+
+def test_traverse_internal_logic() -> None:
+    """Exercise traverse early exit."""
+    calls = 0
+    limit = 2
+
+    def work(x: int) -> Result[int, str]:
+        nonlocal calls
+        calls += 1
+        return Ok(x) if x < limit else Err("too big")
+
+    res = traverse([1, 2, 3], work)
+    assert res == Err("too big")
+    assert calls == limit  # Proves early exit after '2'
+
+
+def test_flow_internal_logic() -> None:
+    """Exercise flow early exit."""
+    calls = 0
+
+    def f1(_x: int) -> Result[int, str]:
+        nonlocal calls
+        calls += 1
+        return Err("stop")
+
+    def f2(x: int) -> Result[int, str]:
+        nonlocal calls
+        calls += 1
+        return Ok(x)
+
+    res = flow(1, f1, f2)
+    assert res == Err("stop")
+    assert calls == 1  # f2 never called
+
+
+def test_catch_call_internal_logic() -> None:
+    """Exercise catch_call with various arguments."""
+
+    def add_kwargs(a: int, b: int = 0) -> int:  # noqa: FURB118
+        return a + b
+
+    assert catch_call(ValueError, operator.add, 1, 2) == Ok(3)
+    assert catch_call(ValueError, add_kwargs, 1, b=2) == Ok(3)
+
+
+def test_partition_exceptions_internal_logic() -> None:
+    """Exercise partition_exceptions with mixed inputs."""
+    items = ["a", ValueError("err")]
+    oks, errs = partition_exceptions(items)
+    assert len(oks) == 1
+    assert len(errs) == 1
+    assert oks[0].ok() == "a"
+    assert isinstance(errs[0].err(), ValueError)

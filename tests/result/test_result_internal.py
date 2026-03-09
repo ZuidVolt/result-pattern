@@ -102,10 +102,10 @@ def test_educational_safeguards() -> None:
 
     # 2. But cross-access still triggers the safeguard via __getattr__
     with pytest.raises(AttributeError, match=r"Direct access to '.error'"):
-        _ = res_ok.error  # type: ignore
+        _ = res_ok.error
 
     with pytest.raises(AttributeError, match=r"Direct access to '.value'"):
-        _ = res_err.value  # type: ignore
+        _ = res_err.value
 
     for variant in [res_ok, res_err]:
         # Crashing operations isolated in .unsafe

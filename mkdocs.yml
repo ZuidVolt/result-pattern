@@ -1,0 +1,79 @@
+site_name: Result Pattern
+site_description: Functional Error Handling for Modern Python
+repo_url: https://github.com/ZuidVolt/result-pattern
+repo_name: ZuidVolt/result-pattern
+
+# Enable strict validation: The build will fail if there are any broken links
+# or if mkdocstrings detects mismatched parameters in your docstrings!
+strict: true
+
+theme:
+  name: material
+  # HexDocs uses a very clean, high-contrast aesthetic.
+  # We use indigo/blue with a dark mode toggle.
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections # Groups sidebar items cleanly
+    - navigation.expand # Keeps the sidebar expanded
+    - navigation.indexes # Allows clicking the section header itself
+    - navigation.top # Back-to-top button
+    - toc.follow # TOC highlights as you scroll
+    - content.code.copy # Copy buttons on all code blocks
+    - content.code.annotate # Allows adding little + icons to explain code
+
+markdown_extensions:
+  - admonition # For Info/Warning boxes
+  - pymdownx.details # Collapsible sections
+  - pymdownx.superfences # Advanced code block rendering
+  - pymdownx.snippets: # <-- Update this section
+      base_path:
+        - docs # Keep access to the docs folder
+        - . # Grant access to the project root
+  - pymdownx.highlight: # Beautiful syntax highlighting
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite # Highlighting inside standard text
+  - pymdownx.tabbed: # Tabbed code blocks
+      alternate_style: true
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [src] # Tells mkdocstrings where your code lives
+          options:
+            docstring_style: google
+            show_root_heading: true
+            show_source: true
+            # This is crucial for PEP 695 Generics and complex Overloads
+            separate_signature: true
+            show_signature_annotations: true
+            # Clean up the output so it feels like HexDocs
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            merge_init_into_class: true
+            signature_crossrefs: true
+
+nav:
+  - Overview: index.md
+  - API Reference:
+      - Result: api/result.md
+      - Outcome: api/outcome.md
+      - Combinators: api/combinators.md

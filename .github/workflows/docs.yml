@@ -1,0 +1,39 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+
+# Grant GITHUB_TOKEN the permissions required to push to gh-pages branch
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # <--- Tweak 1: Fetches all history for MkDocs git plugins
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.14
+        run: uv python install 3.14
+
+      # Install the package and the dev dependencies (mkdocs etc)
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      # Configure Git identity for the gh-deploy commit
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # mkdocs gh-deploy builds the site and pushes it to the gh-pages branch automatically
+      - name: Deploy Docs
+        run: uv run mkdocs gh-deploy --force

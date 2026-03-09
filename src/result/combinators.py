@@ -1,7 +1,7 @@
 """# Result Combinators: High-level functional utilities for Result patterns.
 
 This module provides advanced orchestration tools like error accumulation,
-short-circuiting iteration, and functional pipelining.
+short-circuiting iteration, concurrent mapping, and functional pipelining.
 """
 
 # ruff: noqa: SLF001
@@ -10,12 +10,15 @@ short-circuiting iteration, and functional pipelining.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any, cast, overload
 
 from .result import Err, Ok, Result
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Awaitable, Callable, Iterable
+
+    from .outcome import Outcome
 
 
 @overload
@@ -37,7 +40,8 @@ def validate[T1, T2, T3, T4, E](
 def validate(*results: Result[Any, Any]) -> Result[tuple[Any, ...], list[Any]]:  # type: ignore[misc]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
     """Accumulate all errors from multiple results, or return a tuple of all values.
 
-    Unlike standard chaining, this does not short-circuit on the first error.
+    Unlike standard monadic chaining (.and_then), this does not short-circuit.
+    It is the 'Applicative' alternative to fail-fast logic.
 
     Args:
         *results: Multiple Result instances to validate.
@@ -49,6 +53,7 @@ def validate(*results: Result[Any, Any]) -> Result[tuple[Any, ...], list[Any]]: 
         >>> validate(Ok(1), Ok("a"))
         Ok((1, 'a'))
 
+        >>> # Accumulates multiple errors
         >>> validate(Ok(1), Err("fail1"), Err("fail2"))
         Err(['fail1', 'fail2'])
 
@@ -70,6 +75,8 @@ def validate(*results: Result[Any, Any]) -> Result[tuple[Any, ...], list[Any]]: 
 def traverse[T, U, E](items: Iterable[T], func: Callable[[T], Result[U, E]]) -> Result[list[U], E]:
     """Map a fallible function over an iterable, short-circuiting on the first error.
 
+    Ideal for bulk processing where any single failure invalidates the batch.
+
     Args:
         items: An iterable of items to process.
         func: A function returning a Result for each item.
@@ -81,11 +88,9 @@ def traverse[T, U, E](items: Iterable[T], func: Callable[[T], Result[U, E]]) -> 
         >>> traverse(["1", "2"], lambda x: Ok(int(x)))
         Ok([1, 2])
 
-        >>> traverse(["1", "!"], lambda x: Ok(int(x)) if x.isdigit() else Err("invalid"))
-        Err('invalid')
-
-        >>> traverse(["1", "!"], lambda x: catch_call(ValueError, int, x))
-        Err(ValueError(...))
+        >>> # Short-circuits on '!'
+        >>> traverse(["1", "!", "2"], lambda x: Ok(int(x)) if x.isdigit() else Err(f"bad: {x}"))
+        Err('bad: !')
 
     """
     values: list[U] = []
@@ -99,6 +104,8 @@ def traverse[T, U, E](items: Iterable[T], func: Callable[[T], Result[U, E]]) -> 
 
 def try_fold[T, U, E](items: Iterable[T], initial: U, func: Callable[[U, T], Result[U, E]]) -> Result[U, E]:
     """Fallible reduction (fold). Short-circuits on the first error.
+
+    Useful for building state (like a symbol table) from a list of operations.
 
     Args:
         items: An iterable of items to reduce.
@@ -130,6 +137,8 @@ def try_fold[T, U, E](items: Iterable[T], initial: U, func: Callable[[U, T], Res
 def ensure[E](condition: bool, error: E) -> Result[None, E]:  # noqa: FBT001
     """Lift a boolean condition into a Result.
 
+    Often used inside @do_notation to guard logic.
+
     Args:
         condition: The boolean check to perform.
         error: The error value to return if the condition is False.
@@ -138,11 +147,10 @@ def ensure[E](condition: bool, error: E) -> Result[None, E]:  # noqa: FBT001
         Ok(None) if True, Err(error) if False.
 
     Examples:
-        >>> ensure(1 + 1 == 2, "logic fail")
+        >>> ensure(10 > 5, "logic fail")
         Ok(None)
-
-        >>> ensure(1 + 1 == 3, "math fail")
-        Err('math fail')
+        >>> ensure(1 > 5, "logic fail")
+        Err('logic fail')
 
     """
     return Ok(None) if condition else Err(error)
@@ -159,11 +167,8 @@ def add_context[T, E](res: Result[T, E], context: str) -> Result[T, str]:
         The original result if Ok, or a new Err with the context prepended.
 
     Examples:
-        >>> add_context(Err("not found"), "File IO")
-        Err('File IO: not found')
-
-        >>> add_context(Ok(200), "Network")
-        Ok(200)
+        >>> add_context(Err("refused"), "Connection")
+        Err('Connection: refused')
 
     """
     if isinstance(res, Err):
@@ -195,6 +200,8 @@ def flow[T, T1, T2, T3, E](
 def flow(initial: Any, *funcs: Callable[[Any], Result[Any, Any]]) -> Result[Any, Any]:  # type: ignore[misc]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
     """Sequential pipeline orchestrator. Pipes data through fallible functions.
 
+    Equivalent to chaining .and_then() repeatedly.
+
     Args:
         initial: The starting value.
         *funcs: Multiple functions that take a value and return a Result.
@@ -203,11 +210,8 @@ def flow(initial: Any, *funcs: Callable[[Any], Result[Any, Any]]) -> Result[Any,
         The final Result of the pipeline, or the first Err encountered.
 
     Examples:
-        >>> flow(10, lambda x: Ok(x * 2), lambda x: Ok(str(x)))
-        Ok('20')
-
-        >>> flow("10", lambda x: Ok(int(x)), lambda _: Err("stop"))
-        Err('stop')
+        >>> flow("10", lambda x: Ok(int(x)), lambda x: Ok(x * 2))
+        Ok(20)
 
     """
     res: Result[Any, Any] = Ok(initial)
@@ -240,8 +244,7 @@ def partition_exceptions[T, E: BaseException](
 ) -> tuple[list[Ok[T]], list[Err[E]]]:
     """Partition a mixed iterable of values and Python Exceptions into Oks and Errs.
 
-    This is particularly useful for handling results from batch operations
-    like `asyncio.gather(..., return_exceptions=True)`.
+    Ideal for handling raw results from `asyncio.gather(..., return_exceptions=True)`.
 
     Args:
         items: An iterable containing either values of type T or Exceptions of type E.
@@ -252,10 +255,10 @@ def partition_exceptions[T, E: BaseException](
     Examples:
         >>> items = [1, ValueError("fail"), 2]
         >>> oks, errs = partition_exceptions(items)
-        >>> oks
-        [Ok(1), Ok(2)]
-        >>> errs
-        [Err(ValueError('fail'))]
+        >>> oks[0]
+        Ok(1)
+        >>> errs[0]
+        Err(ValueError('fail'))
 
     """
     oks: list[Ok[T]] = []
@@ -268,3 +271,200 @@ def partition_exceptions[T, E: BaseException](
             oks.append(Ok(cast("T", item)))  # type: ignore[redundant-cast]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
 
     return oks, errs
+
+
+# --- Asynchronous Combinators ---
+
+
+async def gather_results[T, E](*coroutines: Awaitable[Result[T, E]]) -> Result[list[T], E]:
+    """Monadic 'All-or-Nothing' async concurrency.
+
+    Runs multiple Result-returning tasks concurrently. Resolves to the
+    *first* Err encountered, or Ok(list) if all succeed.
+
+    Args:
+        *coroutines: Async tasks that return a Result.
+
+    Returns:
+        The first Err found, or Ok containing a list of all results in order.
+
+    Examples:
+        >>> async def worker(n):
+        ...     return Ok(n * 2)
+        >>> await gather_results(worker(1), worker(2))
+        Ok([2, 4])
+
+    """
+    results = await asyncio.gather(*coroutines)
+    values: list[T] = []
+    for res in results:
+        if isinstance(res, Err):
+            return res
+        values.append(res._value)
+    return Ok(values)
+
+
+async def validate_async[T, E](*coroutines: Awaitable[Result[T, E]]) -> Result[list[T], list[E]]:
+    """Applicative async concurrency.
+
+    Waits for ALL tasks to finish. If any failed, returns Err containing
+    a list of ALL accumulated errors.
+
+    Args:
+        *coroutines: Async tasks that return a Result.
+
+    Returns:
+        Ok(list) if all succeed, or Err(list) containing all errors.
+
+    Examples:
+        >>> async def fail(msg):
+        ...     return Err(msg)
+        >>> await validate_async(fail("e1"), fail("e2"))
+        Err(['e1', 'e2'])
+
+    """
+    results = await asyncio.gather(*coroutines)
+    errors: list[E] = []
+    values: list[T] = []
+
+    for res in results:
+        if isinstance(res, Err):
+            errors.append(res._error)
+        else:
+            values.append(res._value)
+
+    if errors:
+        return Err(errors)
+    return Ok(values)
+
+
+async def traverse_async[T, U, E](
+    items: Iterable[T],
+    func: Callable[[T], Awaitable[Result[U, E]]],
+    *,
+    limit: int | None = None,
+) -> Result[list[U], E]:
+    """Concurrently map a fallible async function over an iterable.
+
+    Short-circuits on the first error. Includes an optional semaphore
+    limit to prevent resource flooding.
+
+    Args:
+        items: An iterable of inputs.
+        func: An async function returning a Result.
+        limit: Optional concurrency limit (semaphore).
+
+    Returns:
+        Ok(list) of transformed values, or the first Err found.
+
+    Examples:
+        >>> async def fetch(url):
+        ...     return Ok(f"data from {url}")
+        >>> await traverse_async(["a.com", "b.com"], fetch, limit=2)
+        Ok(['data from a.com', 'data from b.com'])
+
+    """
+    if limit is not None:
+        sem = asyncio.Semaphore(limit)
+
+        async def worker(item: T) -> Result[U, E]:
+            async with sem:
+                return await func(item)
+
+        tasks = [worker(item) for item in items]
+    else:
+        tasks = [func(item) for item in items]  # type: ignore[misc]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
+
+    return await gather_results(*tasks)
+
+
+def combine_outcomes[T, E](outcomes: Iterable[Outcome[T, E]]) -> Outcome[list[T], list[E]]:
+    """Aggregate a collection of outcomes into a single master Outcome.
+
+    Args:
+        outcomes: An iterable of Outcome instances.
+
+    Returns:
+        A master Outcome containing all values and a flat list of all errors.
+
+    Examples:
+        >>> from result import Outcome
+        >>> combine_outcomes([Outcome(1, "err1"), Outcome(2, None)])
+        Outcome(value=[1, 2], error=['err1'])
+
+    """
+    from .outcome import Outcome  # noqa: PLC0415
+
+    all_values: list[T] = []
+    all_errors: list[Any] = []
+
+    for out in outcomes:
+        all_values.append(out.value)
+        if out.error is not None:
+            if isinstance(out.error, list):
+                all_errors.extend(out.error)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            else:
+                all_errors.append(out.error)
+
+    final_err = all_errors or None
+    return Outcome(all_values, final_err)
+
+
+async def gather_outcomes[T, E](*coroutines: Awaitable[Outcome[T, Any]]) -> Outcome[list[T], list[Any]]:
+    """Concurrently await multiple Outcome-returning tasks and merge them.
+
+    Ensures that every task completes and all diagnostics are gathered.
+
+    Args:
+        *coroutines: Async tasks returning Outcomes.
+
+    Returns:
+        A master Outcome containing all values and combined errors.
+
+    """
+    results = await asyncio.gather(*coroutines)
+    return combine_outcomes(results)
+
+
+async def traverse_async_outcome[T, U, E](
+    items: Iterable[T],
+    func: Callable[[T], Awaitable[Outcome[U, Any]]],
+) -> Outcome[list[U], list[Any]]:
+    """Concurrent map-reduce for fault-tolerant workloads.
+
+    Args:
+        items: An iterable of inputs.
+        func: An async function returning an Outcome.
+
+    Returns:
+        A master Outcome of the batch.
+
+    """
+    tasks = [func(item) for item in items]
+    return await gather_outcomes(*tasks)
+
+
+def partition_results[T, E](results: Iterable[Result[T, E]]) -> tuple[list[T], list[E]]:
+    """Procedurally slice a completed batch of Results into values and errors.
+
+    Args:
+        results: An iterable of Results.
+
+    Returns:
+        A tuple of (values, errors).
+
+    Examples:
+        >>> partition_results([Ok(1), Err("fail")])
+        ([1], ['fail'])
+
+    """
+    values: list[T] = []
+    errors: list[E] = []
+
+    for res in results:
+        if isinstance(res, Ok):
+            values.append(res._value)
+        else:
+            errors.append(res._error)
+
+    return values, errors

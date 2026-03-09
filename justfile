@@ -27,6 +27,17 @@ test:
 coverage:
     pytest -v --cov --cov-report html
 
+# Documentation
+
+docs-build:
+    uv run mkdocs build
+
+docs-serve:
+    uv run mkdocs serve
+
+docs-deploy:
+    uv run mkdocs gh-deploy --force
+
 # Additional analysis checks and Tasks (not Enforced)
 
 clean:
@@ -39,6 +50,7 @@ clean:
     rm -rf .pytest_cache/
     rm -rf .ropeproject/
     rm -rf .hypothesis/
+    rm -rf site/
 
 clean-deps:
     rm -rf .venv/

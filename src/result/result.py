@@ -181,6 +181,18 @@ a return value.
 """
 
 
+U_cast = TypeVar("U_cast")
+F_cast = TypeVar("F_cast")
+
+
+class _CastTypesResult[T_inner, E_inner]:
+    def __init__(self, owner: Result[T_inner, E_inner]) -> None:
+        self._owner = owner
+
+    def __getitem__[U, F](self, _types: Any) -> Callable[[], Result[U, F]]:
+        return lambda: cast("Result[U_cast, F_cast]", self._owner)  # type: ignore[valid-type]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
+
+
 # --- Unsafe Proxies ---
 
 
@@ -260,6 +272,19 @@ class _OkUnsafe[T_co]:
         """
         msg_final = f"{msg}: {self._owner._value!r}"
         raise UnwrapError(self._owner, msg_final)
+
+    @property
+    def cast_types(self) -> _CastTypesResult[T_co, Any]:
+        """Zero-runtime-cost type hint override for strict variance edge cases.
+
+        This allows manually guiding the type checker when it fails to infer
+        complex union types correctly.
+
+        Example:
+            >>> res = Ok(10).unsafe.cast_types[int, Exception]()
+
+        """
+        return _CastTypesResult(self._owner)
 
     def to_outcome(self) -> Outcome[T_co, None]:
         """Downgrade a strict success into an Outcome.
@@ -361,6 +386,19 @@ class _ErrUnsafe[E_co]:
 
         """
         return self._owner._error
+
+    @property
+    def cast_types(self) -> _CastTypesResult[Any, E_co]:
+        """Zero-runtime-cost type hint override for strict variance edge cases.
+
+        This allows manually guiding the type checker when it fails to infer
+        complex union types correctly.
+
+        Example:
+            >>> res = Err("fail").unsafe.cast_types[int, str]()
+
+        """
+        return _CastTypesResult(self._owner)
 
     def to_outcome[U](self, default: U) -> Outcome[U, E_co]:
         """Downgrade a strict failure into a fault-tolerant Outcome.
@@ -806,6 +844,18 @@ class Ok[T_co]:
 
         """
         return self
+
+    def cast_types[U, F](self) -> Result[U, F]:
+        """Zero-runtime-cost type hint override for strict variance edge cases.
+
+        This allows manually guiding the type checker when it fails to infer
+        complex union types correctly.
+
+        Returns:
+            The same instance, but with new type parameters for the checker.
+
+        """
+        return cast("Result[U, F]", self)
 
     def unwrap_or(self, _default: object) -> T_co:
         """Extract the contained value, ignoring the default.
@@ -1268,6 +1318,18 @@ class Err[E_co]:
             return Err(mapping[cast("Any", err_type)])
         return self
 
+    def cast_types[U, F](self) -> Result[U, F]:
+        """Zero-runtime-cost type hint override for strict variance edge cases.
+
+        This allows manually guiding the type checker when it fails to infer
+        complex union types correctly.
+
+        Returns:
+            The same instance, but with new type parameters for the checker.
+
+        """
+        return cast("Result[U, F]", self)
+
     def unwrap_or[T_local](self, default: T_local) -> T_local:
         """Return the provided default value.
 
@@ -1710,11 +1772,17 @@ def catch(  # noqa: C901 # pyright: ignore
 
         @wraps(f)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> Result[T, Any]:
+            __tracebackhide__ = True
             try:
                 return Ok(f(*args, **kwargs))
             except catch_tuple as e:
-                mapped = exc_map[type(e)] if has_mapping else e
+                mapped = exc_map.get(cast("Any", type(e)), e) if has_mapping else e
                 return Err(mapped)
+            except Exception as e:  # noqa: BLE001
+                # Hide the decorator frame from the traceback in modern tools
+                # and suppress implementation-detail exception context.
+                tb = e.__traceback__
+                raise e.with_traceback(tb.tb_next if tb else None) from None
 
         return wrapper
 
@@ -1877,6 +1945,7 @@ def _make_do_wrapper[T_local, E_local, **P](
 
     @wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> Result[Any, Any]:
+        __tracebackhide__ = True
         try:
             gen = func(*args, **kwargs)
             res = next(gen)
@@ -1885,11 +1954,15 @@ def _make_do_wrapper[T_local, E_local, **P](
                     return _apply_remap(res, remap)
                 res = gen.send(res._value)
         except StopIteration as e:
-            return Ok(e.value)  # e.value is standard for StopIteration
-        except Exception as e:
+            return Ok(e.value)
+        except Exception as e:  # noqa: BLE001
             if catch_types and isinstance(e, catch_types):
                 return Err(e)
-            raise
+
+            # Hide the bind loop frame from the traceback in modern tools
+            # and suppress implementation-detail exception context.
+            tb = e.__traceback__
+            raise e.with_traceback(tb.tb_next if tb else None) from None
 
     return wrapper  # pyright: ignore[reportReturnType]
 
@@ -1971,6 +2044,7 @@ def _make_async_wrapper[T_local, E_local, **P](
 
     @wraps(func)
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> Result[Any, Any]:
+        __tracebackhide__ = True
         try:
             gen = func(*args, **kwargs)
             last_val: Result[Any, Any] | None = None
@@ -1985,13 +2059,21 @@ def _make_async_wrapper[T_local, E_local, **P](
                     res = await gen.asend(res._value)
             except StopAsyncIteration:
                 if last_val is None:
-                    msg = "Async do-notation must yield at least one value"
-                    raise RuntimeError(msg) from None
+                    msg = (
+                        "Async do-notation ended without yielding a Result. "
+                        "Note: Async generators cannot use 'return value'. "
+                        "You must end your function with 'yield Ok(value)'."
+                    )
+                    raise UnwrapError(Ok(None), msg) from None
                 return last_val
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             if catch_types and isinstance(e, catch_types):
                 return Err(e)
-            raise
+
+            # Hide the bind loop frame from the traceback in modern tools
+            # and suppress implementation-detail exception context.
+            tb = e.__traceback__
+            raise e.with_traceback(tb.tb_next if tb else None) from None
 
     return wrapper  # pyright: ignore[reportReturnType]
 

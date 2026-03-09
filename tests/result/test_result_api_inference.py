@@ -318,3 +318,17 @@ def test_inference_flow_overload():
     # str -> int -> list[int]
     res = flow("10", lambda s: Ok(int(s)), lambda i: Ok([i]))
     assert res == Ok([10])
+
+
+def test_inference_cast_types():
+    """Verify manual type override via cast_types."""
+    # Force a broader error type
+    res: Result[int, ValueError] = Ok(10)
+    res.unsafe.cast_types[int, Exception]()
+
+    # Force a different success type (unsafe, but allowed by cast)
+    overridden = res.unsafe.cast_types[str, ValueError]()
+    if is_ok(overridden):
+        # We forced str but the runtime value is still 10
+        val: Any = overridden.ok()
+        assert val == 10

@@ -346,3 +346,47 @@ def test_partition_exceptions_internal_logic() -> None:
     assert len(errs) == 1
     assert oks[0].ok() == "a"
     assert isinstance(errs[0].err(), ValueError)
+
+
+def test_traceback_trimming() -> None:
+    """Verify library frames use industry-standard markers for hiding."""
+
+    @catch(ValueError)
+    def crash() -> Never:
+        raise RuntimeError("boom")
+
+    try:
+        crash()
+    except RuntimeError as e:
+        # 1. Verify noise suppression (raise from None)
+        assert e.__context__ is None
+
+        # 2. Verify marker presence in the wrapper frame
+        # We need to find the frame that belongs to the library's wrapper
+        tb = e.__traceback__
+        assert tb is not None
+
+        # In this test environment, the chain is: test_func -> wrapper -> crash
+        # wrapper should have the marker
+        curr = tb
+        found_marker = False
+        while curr:
+            if curr.tb_frame.f_locals.get("__tracebackhide__"):
+                found_marker = True
+                break
+            curr = curr.tb_next
+
+        assert found_marker, "Did not find __tracebackhide__ marker in the traceback chain"
+
+
+@pytest.mark.asyncio
+async def test_instructional_async_error() -> None:
+    """Verify helpful message when async do block lacks a yield."""
+
+    @do_notation_async
+    async def empty_workflow() -> DoAsync[Any, Any]:
+        if False:
+            yield Ok(1)
+
+    with pytest.raises(UnwrapError, match="Note: Async generators cannot use 'return value'"):
+        await empty_workflow()

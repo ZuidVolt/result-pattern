@@ -104,6 +104,21 @@ import json
 res = catch_call(json.JSONDecodeError, json.loads, '{"key": "value"}')
 ```
 
+### 4. `catch` Context Manager
+Lasso an entire block of wild Python code and capture the result safely.
+```python
+from result import catch
+import json
+
+with catch(json.JSONDecodeError) as safe_block:
+    data = json.loads(payload)
+    # Perform complex logic...
+    safe_block.set(data["nested"]["key"])
+
+# result is narrowed to Result[T, JSONDecodeError]
+print(safe_block.result)
+```
+
 ---
 
 ## Monadic Orchestration: Do-Notation

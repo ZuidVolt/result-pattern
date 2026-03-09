@@ -12,10 +12,46 @@ holds both a success value and an optional error state simultaneously.
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping
+from dataclasses import dataclass
 from functools import wraps
-from typing import Any, NamedTuple, cast, overload
+from typing import Any, NamedTuple, TypeVar, cast, overload
 
 from .result import Err, Ok, Result, _resolve_mapping
+
+T_inner = TypeVar("T_inner")
+E_inner = TypeVar("E_inner")
+
+
+U_cast = TypeVar("U_cast")
+F_cast = TypeVar("F_cast")
+
+
+class _CastTypesOutcome[T_inner, E_inner]:
+    def __init__(self, owner: Outcome[T_inner, E_inner]) -> None:
+        self._owner = owner
+
+    def __getitem__[U, F](self, _types: Any) -> Callable[[], Outcome[U, F]]:
+        return lambda: cast("Outcome[U_cast, F_cast]", self._owner)  # type: ignore[valid-type]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
+
+
+@dataclass(frozen=True, slots=True)
+class _OutcomeUnsafe[T_inner, E_inner]:
+    """Namespace for potentially unsafe operations on Outcome."""
+
+    _owner: Outcome[T_inner, E_inner]
+
+    @property
+    def cast_types(self) -> _CastTypesOutcome[T_inner, E_inner]:
+        """Zero-runtime-cost type hint override for strict variance edge cases.
+
+        This allows manually guiding the type checker when it fails to infer
+        complex union types correctly.
+
+        Example:
+            >>> res = Outcome(10, None).unsafe.cast_types[int, str]()
+
+        """
+        return _CastTypesOutcome(self._owner)
 
 
 class Outcome[T, E](NamedTuple):
@@ -32,6 +68,16 @@ class Outcome[T, E](NamedTuple):
 
     value: T
     error: E | Any | None = None
+
+    @property
+    def unsafe(self) -> _OutcomeUnsafe[T, E]:
+        """Namespace for operations that bypass standard type safety.
+
+        Examples:
+            >>> Outcome(10, None).unsafe.cast_types[int, Exception]()
+
+        """
+        return _OutcomeUnsafe(self)
 
     def has_error(self) -> bool:
         """Check if an error exists, intelligently handling empty collections.
@@ -168,6 +214,18 @@ class Outcome[T, E](NamedTuple):
                 return Outcome(self.value, mapping[err_type])
 
         return self
+
+    def cast_types[U, F](self) -> Outcome[U, F]:
+        """Zero-runtime-cost type hint override for strict variance edge cases.
+
+        This allows manually guiding the type checker when it fails to infer
+        complex union types correctly.
+
+        Returns:
+            The same instance, but with new type parameters for the checker.
+
+        """
+        return cast("Outcome[U, F]", self)
 
     def push_err[E2](self, new_error: E2) -> Outcome[T, E | E2]:
         """Append a new diagnostic error without altering the value.
@@ -388,12 +446,18 @@ def catch_outcome(
     def decorator(func: Any) -> Any:
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Outcome[Any, Any]:
+            __tracebackhide__ = True
             try:
                 return Outcome(func(*args, **kwargs), None)
             except catch_tuple as e:
                 # If we have an explicit mapping, use it. Otherwise, use the instance 'e'.
                 mapped = exc_map[type(e)] if has_mapping else e
                 return Outcome(default, mapped)
+            except Exception as e:  # noqa: BLE001
+                # Hide the decorator frame from the traceback in modern tools
+                # and suppress implementation-detail exception context.
+                tb = e.__traceback__
+                raise e.with_traceback(tb.tb_next if tb else None) from None
 
         return wrapper
 

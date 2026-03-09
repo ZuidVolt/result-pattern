@@ -16,6 +16,12 @@ $ pip install result-pattern
 
 ---
 
+## Help
+
+See [documentation](https://zuidvolt.github.io/result-pattern/) for more details.
+
+---
+
 ## Core Concept: Result (Sum Type)
 
 A `Result` is a **Sum Type** representing a state of being either completely successful (`Ok`) or completely failed (`Err`).

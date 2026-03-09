@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "result-pattern"
-version = "1.0.0"
-description = "A production-grade, zero-dependency Result pattern library for modern Python 3.14+"
+version = "0.1.0"
+description = "Errors as Values for Modern Python (result type)"
 readme = "README.md"
 readme-content-type = "text/markdown"
 keywords = ["result", "monad", "functional", "error-handling", "type-safe"]
-license = { text = "GPL-3.0-only" }
+license = { text = "LICENSE" }
 authors = [{ name = "ZuidVolt" }]
 requires-python = ">=3.14"
 classifiers = [
@@ -24,6 +24,7 @@ dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/ZuidVolt/result-pattern"
+Documentation = "https://zuidvolt.github.io/result-pattern/"
 Repository = "https://github.com/ZuidVolt/result-pattern"
 
 [tool.hatch.build.targets.wheel]

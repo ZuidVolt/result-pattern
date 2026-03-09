@@ -30,7 +30,7 @@ Repository = "https://github.com/ZuidVolt/result-pattern"
 [tool.hatch.build.targets.wheel]
 packages = ["src/result"]
 
-[tool.hatch.build.targets.sdist]
+
 [tool.hatch.build.targets.sdist]
 include = [
     "README.md",

@@ -241,6 +241,28 @@ def test_inference_catch_call() -> None:
         assert isinstance(err, ValueError | TypeError)
 
 
+def test_inference_result_map_exc() -> None:
+    """Verify inference for Result.map_exc."""
+    res = Err(ValueError("fail")).map_exc({ValueError: "invalid"})
+    if is_err(res):
+        # Should know it is str
+        val: Any = res.err()
+        assert val == "invalid"
+
+
+def test_inference_catch_mapping():
+    """Verify inference for catch with mapping."""
+
+    @catch({ValueError: "invalid"})
+    def risky(s: str) -> int:
+        return int(s)
+
+    res = risky("abc")
+    if is_err(res):
+        val: Any = res.err()
+        assert val == "invalid"
+
+
 def test_inference_partition_exceptions():
     """Verify type tracing through partition_exceptions."""
     items = [1, ValueError("a")]

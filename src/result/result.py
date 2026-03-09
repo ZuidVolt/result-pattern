@@ -45,7 +45,7 @@ that failure paths are handled as diligently as success paths.
 from __future__ import annotations
 
 import inspect
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, Generator, Mapping
 from dataclasses import dataclass, field
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Final, Literal, Never, TypeIs, TypeVar, Union, cast, overload
@@ -54,6 +54,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Iterable
     from types import TracebackType
     from typing import ParamSpec, Protocol
+
+    from .outcome import Outcome
 
     P = ParamSpec("P")
     T_ret = TypeVar("T_ret")
@@ -259,6 +261,24 @@ class _OkUnsafe[T_co]:
         msg_final = f"{msg}: {self._owner._value!r}"
         raise UnwrapError(self._owner, msg_final)
 
+    def to_outcome(self) -> Outcome[T_co, None]:
+        """Downgrade a strict success into an Outcome.
+
+        Always returns a clean Outcome with no errors.
+
+        Returns:
+            A clean Outcome containing the value.
+
+        """
+        try:
+            from .outcome import Outcome  # noqa: PLC0415
+        except ImportError:
+            raise ImportError(
+                "Outcome is not available. use the `result_pattern` pip package and not just the result.py file"
+            ) from None
+
+        return Outcome(self._owner._value, None)
+
 
 @dataclass(frozen=True, slots=True)
 class _ErrUnsafe[E_co]:
@@ -341,6 +361,27 @@ class _ErrUnsafe[E_co]:
 
         """
         return self._owner._error
+
+    def to_outcome[U](self, default: U) -> Outcome[U, E_co]:
+        """Downgrade a strict failure into a fault-tolerant Outcome.
+
+        Requires a default value to satisfy the Product Type contract.
+
+        Args:
+            default: The fallback value to populate the Outcome.
+
+        Returns:
+            A fault-tolerant Outcome containing the default value and the error.
+
+        """
+        try:
+            from .outcome import Outcome  # noqa: PLC0415
+        except ImportError:
+            raise ImportError(
+                "Outcome is not available. use the `result_pattern` pip package and not just the result.py file"
+            ) from None
+
+        return Outcome(default, self._owner._error)
 
 
 # --- Core Variants ---
@@ -749,6 +790,22 @@ class Ok[T_co]:
 
         """
         return on_ok(self._value)
+
+    def map_exc(self, _mapping: Mapping[type[Exception], Any]) -> Ok[T_co]:
+        """Ignore the error mapping and return self unchanged.
+
+        Args:
+            _mapping: A dictionary mapping exception types to new values.
+
+        Returns:
+            The current instance unchanged.
+
+        Examples:
+            >>> Ok(10).map_exc({ValueError: ErrorCode.INVALID})
+            Ok(10)
+
+        """
+        return self
 
     def unwrap_or(self, _default: object) -> T_co:
         """Extract the contained value, ignoring the default.
@@ -1183,6 +1240,34 @@ class Err[E_co]:
         """
         return on_err(self._error)
 
+    def map_exc(self, mapping: Mapping[type[Exception], Any]) -> Err[Any]:
+        """Replace the error payload if its type exists in the mapping.
+
+        This is ideal for converting raw Python exceptions into domain-specific
+        Enums or error codes immediately after they are caught.
+
+        Args:
+            mapping: A dictionary mapping exception types to new values.
+
+        Returns:
+            A new Err with the mapped value if a match was found, otherwise self.
+
+        Examples:
+            >>> # Single mapping to Enum
+            >>> Err(ValueError("fail")).map_exc({ValueError: ErrorCode.INVALID})
+            Err(<ErrorCode.INVALID: 'invalid'>)
+
+            >>> # Multiple mappings
+            >>> mapping = {ValueError: ErrorCode.INVALID, KeyError: ErrorCode.MISSING}
+            >>> Err(KeyError("key")).map_exc(mapping)
+            Err(<ErrorCode.MISSING: 'missing'>)
+
+        """
+        err_type = type(self._error)
+        if err_type in mapping:
+            return Err(mapping[cast("Any", err_type)])
+        return self
+
     def unwrap_or[T_local](self, default: T_local) -> T_local:
         """Return the provided default value.
 
@@ -1441,45 +1526,92 @@ def _apply_remap[E_local](res: Err[E_local], remap: dict[type[Any], type[Any]] |
     return res
 
 
+def _resolve_mapping(
+    exceptions: type[Exception] | tuple[type[Exception], ...] | Mapping[type[Exception], Any],
+    map_to: Any = None,
+) -> dict[type[Exception], Any]:
+    """Normalize exception input into a mapping dictionary."""
+    if isinstance(exceptions, Mapping):
+        return cast("dict[type[Exception], Any]", dict(exceptions))  # pyright: ignore[reportUnnecessaryCast]
+
+    if isinstance(exceptions, tuple):
+        return {exc: map_to if map_to is not None else exc for exc in exceptions}
+
+    return {exceptions: map_to if map_to is not None else exceptions}
+
+
 @overload
 def catch[T, E: Exception, **P](
     exceptions: type[E],
     func: Callable[P, T],
-) -> Callable[P, Result[T, E]]: ...
+    *,
+    map_to: Any = None,
+) -> Callable[P, Result[T, Any]]: ...
 
 
 @overload
 def catch[T, E: Exception, **P](
     exceptions: type[E],
     func: Callable[P, Coroutine[Any, Any, T]],
-) -> Callable[P, Awaitable[Result[T, E]]]: ...
+    *,
+    map_to: Any = None,
+) -> Callable[P, Awaitable[Result[T, Any]]]: ...
 
 
 @overload
 def catch[E: Exception](
     exceptions: type[E],
     func: None = None,
+    *,
+    map_to: Any = None,
 ) -> _CatchDecoratorOrContext[E]: ...
+
+
+@overload
+def catch[T, **P](
+    exceptions: Mapping[type[Exception], Any],
+    func: Callable[P, T],
+) -> Callable[P, Result[T, Any]]: ...
+
+
+@overload
+def catch[T, **P](
+    exceptions: Mapping[type[Exception], Any],
+    func: Callable[P, Coroutine[Any, Any, T]],
+) -> Callable[P, Awaitable[Result[T, Any]]]: ...
+
+
+@overload
+def catch(
+    exceptions: Mapping[type[Exception], Any],
+    func: None = None,
+) -> _CatchDecoratorOrContext[Exception]: ...
 
 
 @overload
 def catch[T, E1: Exception, E2: Exception, **P](
     exceptions: tuple[type[E1], type[E2]],
     func: Callable[P, T],
-) -> Callable[P, Result[T, E1 | E2]]: ...
+    *,
+    map_to: Any = None,
+) -> Callable[P, Result[T, Any]]: ...
 
 
 @overload
 def catch[T, E1: Exception, E2: Exception, **P](  # type: ignore[overload-overlap] # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
     exceptions: tuple[type[E1], type[E2]],
     func: Callable[P, Coroutine[Any, Any, T]],
-) -> Callable[P, Awaitable[Result[T, E1 | E2]]]: ...
+    *,
+    map_to: Any = None,
+) -> Callable[P, Awaitable[Result[T, Any]]]: ...
 
 
 @overload
 def catch[E1: Exception, E2: Exception](
     exceptions: tuple[type[E1], type[E2]],
     func: None = None,
+    *,
+    map_to: Any = None,
 ) -> _CatchDecoratorOrContext[E1 | E2]: ...
 
 
@@ -1487,76 +1619,102 @@ def catch[E1: Exception, E2: Exception](
 def catch[T, **P](
     exceptions: tuple[type[Exception], ...],
     func: Callable[P, T],
-) -> Callable[P, Result[T, Exception]]: ...
+    *,
+    map_to: Any = None,
+) -> Callable[P, Result[T, Any]]: ...
 
 
 @overload
 def catch[T, **P](
     exceptions: tuple[type[Exception], ...],
     func: Callable[P, Coroutine[Any, Any, T]],
-) -> Callable[P, Awaitable[Result[T, Exception]]]: ...
+    *,
+    map_to: Any = None,
+) -> Callable[P, Awaitable[Result[T, Any]]]: ...
 
 
 @overload
 def catch(
     exceptions: tuple[type[Exception], ...],
     func: None = None,
+    *,
+    map_to: Any = None,
 ) -> _CatchDecoratorOrContext[Exception]: ...
 
 
 def catch(  # noqa: C901 # pyright: ignore
     exceptions: Any,
     func: Any = None,
+    *,
+    map_to: Any = None,
 ) -> Any:
     """Execute a function and catch specified exceptions into a Result.
 
     Can be used as a standalone wrapper or as a decorator.
 
     Args:
-        exceptions: An exception type or tuple of types to catch.
+        exceptions: An exception type, tuple of types, or mapping of types to values.
         func: Optional function to wrap and execute immediately.
+        map_to: Optional value to return in Err if an exception matches.
 
     Returns:
         A Result if `func` was provided, otherwise a decorator.
 
     Examples:
+        >>> # 1. Simple catch (returns the caught instance)
         >>> @catch(ValueError)
         ... def parse(s: str) -> int:
         ...     return int(s)
-        >>> parse("10")
-        Ok(10)
-        >>> parse("not an int")
-        Err(ValueError(...))
+        >>> parse("abc")
+        Err(ValueError("invalid literal for int()..."))
 
-        >>> catch(ValueError, int, "10")
-        Ok(10)
+        >>> # 2. Map single error to Enum using map_to
+        >>> @catch(ValueError, map_to=ErrorCode.INVALID)
+        ... def parse_safe(s: str) -> int:
+        ...     return int(s)
+        >>> parse_safe("abc")
+        Err(<ErrorCode.INVALID: 'invalid'>)
+
+        >>> # 3. Map multiple errors to Enums using a dictionary
+        >>> error_map = {ValueError: ErrorCode.INVALID, KeyError: ErrorCode.MISSING}
+        >>> @catch(error_map)
+        ... def risky_op(x):
+        ...     if x == 0:
+        ...         raise ValueError
+        ...     if x == 1:
+        ...         raise KeyError
+        ...     return "ok"
+        >>> risky_op(0)
+        Err(<ErrorCode.INVALID: 'invalid'>)
+        >>> risky_op(1)
+        Err(<ErrorCode.MISSING: 'missing'>)
 
     """
+    exc_map = _resolve_mapping(exceptions, map_to)
+    catch_tuple = tuple(exc_map.keys())
+    # Track if we have an actual mapping value (other than the exception class itself)
+    has_mapping = map_to is not None or isinstance(exceptions, Mapping)
 
     def decorator(f: Callable[P, T]) -> Callable[P, Any]:
         if inspect.iscoroutinefunction(f):
 
             @wraps(f)
-            async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> Result[Any, Exception]:
+            async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> Result[Any, Any]:
                 try:
                     return Ok(await f(*args, **kwargs))
-                except exceptions as e:
-                    # Ensure it is a standard Exception for the Result[T, Exception] type
-                    assert isinstance(e, Exception)
-                    res: Result[Any, Exception] = Err(e)
-                    return res
+                except catch_tuple as e:
+                    mapped = exc_map[type(e)] if has_mapping else e
+                    return Err(mapped)
 
             return async_wrapper
 
         @wraps(f)
-        def wrapper(*args: P.args, **kwargs: P.kwargs) -> Result[T, Exception]:
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> Result[T, Any]:
             try:
                 return Ok(f(*args, **kwargs))
-            except exceptions as e:
-                # Ensure it is a standard Exception for the Result[T, Exception] type
-                assert isinstance(e, Exception)
-                res: Result[T, Exception] = Err(e)
-                return res
+            except catch_tuple as e:
+                mapped = exc_map[type(e)] if has_mapping else e
+                return Err(mapped)
 
         return wrapper
 
@@ -1573,7 +1731,7 @@ def catch(  # noqa: C901 # pyright: ignore
             return decorator(f)
 
         def __enter__(self) -> CatchContext[Any, Any]:
-            self._ctx = CatchContext(exceptions)
+            self._ctx = CatchContext(catch_tuple)
             return self._ctx.__enter__()
 
         def __exit__(
@@ -1584,7 +1742,14 @@ def catch(  # noqa: C901 # pyright: ignore
         ) -> bool:
             if self._ctx is None:
                 return False
-            return self._ctx.__exit__(exc_type, exc_val, exc_tb)
+            exit_res = self._ctx.__exit__(exc_type, exc_val, exc_tb)
+            if exit_res and self._ctx.result is not None:
+                # Apply mapping if context trapped an error
+                err_val = self._ctx.result.err()
+                if err_val is not None:
+                    mapped = exc_map.get(cast("Any", type(err_val)), err_val)
+                    self._ctx.result = Err(mapped)
+            return exit_res
 
     return DecoratorOrContext()
 

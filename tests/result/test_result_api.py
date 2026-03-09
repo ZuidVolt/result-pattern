@@ -43,7 +43,7 @@ from result.combinators import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, Mapping
 
 # --- Core Functional Invariants (Algebraic Laws) ---
 
@@ -174,7 +174,7 @@ async def test_async_integration_flow() -> None:
     """Integration: Test complex async flows with do_notation_async and catch wrappers."""
 
     @catch(RuntimeError)
-    async def fetch_user_name(user_id: int) -> str:  # noqa: RUF029
+    async def fetch_user_name(user_id: int) -> str:
 
         if user_id < 0:
             msg = "invalid id"
@@ -559,3 +559,58 @@ def test_succeeds_filtering() -> None:
     """Verify succeeds extracts only Ok values."""
     results: list[Result[int, str]] = [Ok(1), Err("fail"), Ok(2)]
     assert succeeds(results) == [1, 2]
+
+
+def test_result_map_exc() -> None:
+    """Verify Result.map_exc transforming error payloads."""
+
+    class ErrorCode(StrEnum):
+        INVALID = "invalid"
+        MISSING = "missing"
+
+    mapping: Mapping[type[Exception], Any] = {ValueError: ErrorCode.INVALID, KeyError: ErrorCode.MISSING}
+
+    # Err matches
+    assert Err(ValueError("a")).map_exc(mapping) == Err(ErrorCode.INVALID)
+    assert Err(KeyError("b")).map_exc(mapping) == Err(ErrorCode.MISSING)
+
+    # Err no match
+    err_other: Result[int, Exception] = Err(RuntimeError("c"))
+    assert err_other.map_exc(mapping) == err_other
+
+    # Ok ignored
+    assert Ok(10).map_exc(mapping) == Ok(10)
+
+
+def test_catch_mapping_api() -> None:
+    """Verify catch with explicit mapping dictionary or map_to."""
+
+    class ErrorCode(StrEnum):
+        INVALID = "invalid"
+        MISSING = "missing"
+
+    # 1. With Mapping dict
+    @catch({ValueError: ErrorCode.INVALID, KeyError: ErrorCode.MISSING})
+    def risky(x: str) -> str:
+        if x == "val":
+            raise ValueError
+        if x == "key":
+            raise KeyError
+        return "ok"
+
+    res_val = risky("val")
+    assert is_err(res_val) and cast("Any", res_val.err()) == ErrorCode.INVALID
+    res_key = risky("key")
+    assert is_err(res_key) and cast("Any", res_key.err()) == ErrorCode.MISSING
+    assert risky("other") == Ok("ok")
+
+    # 2. With map_to
+    @catch(ValueError, map_to=ErrorCode.INVALID)
+    def simple(x: str) -> int:
+        if x == "fail":
+            raise ValueError
+        return 1
+
+    res_fail = simple("fail")
+    assert is_err(res_fail) and cast("Any", res_fail.err()) == ErrorCode.INVALID
+    assert simple("ok") == Ok(1)

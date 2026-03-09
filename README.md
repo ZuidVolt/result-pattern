@@ -3,167 +3,172 @@
 [![CI](https://github.com/ZuidVolt/result-pattern/actions/workflows/CI.yml/badge.svg)](https://github.com/ZuidVolt/result-pattern/actions/workflows/CI.yml)
 [![Python Version](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/release/python-3140/)
 
-zero-dependency Result type for Modern Python (3.14+). This library implements the "Errors as Values" pattern with a focus on strict type safety, safety guardrails, and ergonomic functional orchestration.
+A library designed to implement the **"Errors as Values"** pattern in Python 3.14+. It bridges the gap between pure functional safety and the pragmatic realities of the exception-heavy Python ecosystem.
+
+---
 
 ## Installation
 
 ```sh
-# The package is 'result-pattern', but you import 'result'
+# Package name is 'result-pattern', but you import 'result'
 $ pip install result-pattern
 ```
 
-## Summary
+---
 
-The core idea is that a result value can be either `Ok(value)` or `Err(error)`. Unlike standard Python where errors are implicit side-effects (Exceptions), `Result[T, E]` makes failure modes a first-class part of your API.
+## Core Concept: Result (Sum Type)
 
-### Transforming Code
+A `Result` is a **Sum Type** representing a state of being either completely successful (`Ok`) or completely failed (`Err`).
 
-**Legacy Python (Exceptions/Tuples):**
-```python
-def get_user(user_id: int) -> User | None:
-    if not database_active():
-        raise ConnectionError("DB Down")
-    return db.query(user_id)
-
-
-try:
-    user = get_user(1)
-    if user:
-        print(user.name)
-except ConnectionError as e:
-    print(f"Failed: {e}")
-```
-
-**Modern Python (Result Pattern):**
+### 1. Basic Usage
 ```python
 from result import Ok, Err, Result, is_ok
 
+def divide(a: int, b: int) -> Result[float, str]:
+    if b == 0:
+        return Err("Cannot divide by zero")
+    return Ok(a / b)
 
-def get_user(user_id: int) -> Result[User, str]:
-    if not database_active():
-        return Err("DB Down")
-    user = db.query(user_id)
-    return Ok(user) if user else Err("Not Found")
-
-
-res = get_user(1)
+res = divide(10, 2)
 if is_ok(res):
-    # res is narrowed to Ok[User]
-    print(res.ok().name)
-else:
-    # res is narrowed to Err[str]
-    print(f"Failed: {res.err()}")
+    # res is narrowed to Ok[float]
+    print(f"Success: {res.ok()}")
 ```
 
-### Pattern Matching (Python 3.10+)
-
-Thanks to aligned `__match_args__`, you can use clean, descriptive names in `match` statements:
-
+### 2. Modern Pattern Matching
+Leverage Python 3.10+ native matching with optimized `__match_args__`:
 ```python
-match get_user(1):
-    case Ok(user):
-        print(f"Found: {user.name}")
-    case Err(error):
-        print(f"Error: {error}")
+match divide(10, 0):
+    case Ok(val): print(f"Value: {val}")
+    case Err(msg): print(f"Error: {msg}")
 ```
 
----
-
-## API & Philosophy
-
-### Zero-Escape Safety
-Crashing operations (panics) are strictly isolated in the `.unsafe` namespace. This ensures that "unwrapping" is always an intentional, visible choice in your codebase.
-
+### 3. Functional Chaining
+Avoid nested `if` statements with linear pipelines:
 ```python
-res = Err("critical failure")
-
-# This will raise a helpful AttributeError explaining the safe alternatives
-res.unwrap()
-
-# Use the unsafe namespace if you specifically need to panic
-res.unsafe.unwrap()  # Raises UnwrapError
-```
-
-### Creating & Checking
-```python
-from result import Ok, Err, OkErr, is_ok, is_err
-
-res1 = Ok(200)
-res2 = Err(404)
-
-isinstance(res1, OkErr)  # True
-is_ok(res1)  # True (TypeIs narrowing)
-```
-
-### Safe Conversion
-Convert to optional values without risking exceptions:
-```python
-res = Ok(10)
-val = res.ok()  # 10
-err = res.err()  # None
-
-res_err = Err("fail")
-val = res_err.ok()  # None
-err = res_err.err()  # "fail"
-```
-
-### Functional Chaining
-```python
-# Chaining success paths
 Ok(10).map(lambda x: x * 2).tap(print).and_then(lambda x: Ok(x + 1))
-
-# Recovery paths
-Err("fail").or_else(lambda _: Ok(0))
-
-# Side effects
-res.tap(log_success).tap_err(log_failure)
 ```
 
 ---
 
-## Modern Features
+## Interoperability: The Catch System
 
-### `@safe` Decorator
-Quickly lift existing exception-throwing code into `Result` containers. Supports both synchronous and asynchronous functions with perfect type inference.
+Bridge the procedural world of exceptions to the functional world of Results.
 
+### 1. `@catch` Decorator
+Lift exception-throwing code into `Result` containers with zero boilerplate.
 ```python
-from result import safe
+from result import catch
 
-
-@safe(ValueError)
-def parse(s: str) -> int:
+@catch(ValueError)
+def parse_int(s: str) -> int:
     return int(s)
 
-
-parse("10")  # Ok(10)
-parse("not a number")  # Err(ValueError(...))
+parse_int("10")   # Ok(10)
+parse_int("abc")  # Err(ValueError(...))
 ```
 
-### Do-Notation (Monadic Bind)
-Eliminate nested "if is_ok" blocks with imperative-style generator syntax.
-
+### 2. Exception Mapping (`map_to` & Enums)
+Immediately sanitize wild exceptions into strictly typed Domain Enums.
 ```python
-from result import do_notation, Ok
+from enum import StrEnum
+from result import catch
 
+class ErrorCode(StrEnum):
+    INVALID = "invalid_input"
 
-@do_notation
-def process_data(user_id: int):
-    user = yield fetch_user(user_id)  # Auto-unwraps Ok or short-circuits Err
-    profile = yield fetch_profile(user)  # Type of 'user' is the success value
-    return profile.avatar_url  # Automatically wrapped in Ok
+# Single mapping
+@catch(ValueError, map_to=ErrorCode.INVALID)
+def risky_op(s: str): ...
+
+# Multiple mapping dictionary
+@catch({ValueError: ErrorCode.INVALID, KeyError: "missing"})
+def complex_op(x): ...
 ```
 
-### Async Integration
-First-class support for `async/await` throughout the API:
+### 3. `catch_call` Inline
+Execute standard library functions inline without opening context blocks.
 ```python
-await res.map_async(async_func)
-await res.and_then_async(async_returning_result)
+from result import catch_call
+import json
 
-
-@do_notation_async
-async def workflow():
-    data = yield await async_step_1()
-    yield Ok(data.summary)
+res = catch_call(json.JSONDecodeError, json.loads, '{"key": "value"}')
 ```
 
 ---
+
+## Monadic Orchestration: Do-Notation
+
+Write procedural-looking code that automatically handles short-circuiting logic.
+
+```python
+from result import do_notation, Do
+
+@do_notation
+def compile_pipeline(source: str) -> Do[str, Exception]:
+    tokens = yield tokenize(source)      # Returns list[Token] or short-circuits Err
+    ast    = yield parse(tokens)         # Returns AST or short-circuits Err
+    code   = yield generate(ast)
+    return code                          # Automatically wrapped in Ok
+```
+
+---
+
+## Combinators: Advanced Utilities
+
+| Utility | Description |
+| :--- | :--- |
+| `validate()` | **Applicative**: Accumulates all errors instead of failing fast. |
+| `traverse()` | Maps a fallible function over an iterable, failing fast. |
+| `flow()` | A sequential pipeline macro for piped data transformations. |
+| `succeeds()` | Filters a collection of Results, returning only the success values. |
+| `partition_exceptions()` | Splits a mixed list of `[Value, Exception]` into `[Ok, Err]`. |
+
+---
+
+## Outcome: Product Type (Go/Odin Style)
+
+While `Result` is mathematically pure, real-world systems often require **fault tolerance**. `Outcome[T, E]` is a **Product Type** that holds both a partial success value and diagnostic baggage simultaneously.
+
+### Advantages:
+* **Native Unpacking**: Inherits from `NamedTuple` for `val, err = do_work()` syntax.
+* **Fault Tolerance**: Retain your AST or data payload even if warnings/errors occurred.
+* **Odin Style**: Use `.to_result()` inside a `@do_notation` block to simulate Odin's `or_return`.
+
+### Usage:
+```python
+from result import Outcome
+
+def parse_with_diagnostics(source: str) -> Outcome[AST, list[str]]:
+    # build AST and accumulate errors...
+    return Outcome(ast, accumulated_errors)
+
+# 1. Procedural Unpacking (Go/Odin style)
+ast, errors = parse_with_diagnostics(src)
+if errors:
+    print(f"Warnings: {errors}")
+
+# 2. Accumulation
+new_outcome = Outcome(node, "e1").push_err("e2").merge(other_outcome)
+
+# 3. Transition to Strict (or_return)
+@do_notation
+def strict_flow():
+    # .to_result() halts execution if any errors exist
+    ast = yield parse_with_diagnostics(src).to_result()
+    return emit(ast)
+```
+
+---
+
+## API Philosophy
+
+### Zero-Escape Safety
+Panics are isolated in the `.unsafe` namespace. Direct `.unwrap()` access is disabled at the root level to encourage safe functional patterns.
+```python
+res = Err("fail")
+res.unsafe.unwrap() # Explicit panic
+```
+
+### True Covariance
+Full support for inheritance subtyping (e.g., `Ok[Dog]` is assignable to `Result[Animal, Any]`).

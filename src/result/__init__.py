@@ -8,6 +8,7 @@ from .combinators import (
     try_fold,
     validate,
 )
+from .outcome import Outcome, catch_outcome
 from .result import (
     CatchContext,
     Do,
@@ -39,12 +40,14 @@ __all__ = [
     "Err",
     "Ok",
     "OkErr",
+    "Outcome",
     "Result",
     "UnwrapError",
     "add_context",
     "any_ok",
     "catch",
     "catch_call",
+    "catch_outcome",
     "combine",
     "do",
     "do_async",

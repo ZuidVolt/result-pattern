@@ -436,6 +436,49 @@ def catch_outcome(
     return decorator
 
 
+def as_outcome[T, E_in: Exception, E_out](
+    exception: E_in,
+    default: T,
+    mapping: type[Exception] | tuple[type[Exception], ...] | Mapping[type[Exception], E_out] | None = None,
+    *,
+    map_to: E_out | None = None,
+) -> Outcome[T, E_in | E_out]:
+    """Lift a caught exception into an Outcome variant with a default value.
+
+    This pinpoint utility allows manual conversion inside standard try/except
+    blocks while preserving the fault-tolerant Outcome pattern.
+
+    Args:
+        exception: The exception instance to wrap.
+        default: The success value to carry in the Outcome.
+        mapping: Optional exception type, tuple, or dict for transformation.
+        map_to: Optional value to use as the error if mapping is a type/tuple.
+
+    Returns:
+        An Outcome containing the default value and the (mapped) error.
+
+    Examples:
+        >>> try:
+        ...     raise ValueError("fail")
+        ... except Exception as e:
+        ...     out = as_outcome(e, default=0, mapping={ValueError: "mapped"})
+        >>> out
+        Outcome(value=0, error='mapped')
+
+    """
+    if mapping is None:
+        return cast("Outcome[T, E_in | E_out]", Outcome(default, exception))
+
+    exc_map = _resolve_mapping(mapping, map_to)
+    has_mapping = map_to is not None or isinstance(mapping, Mapping)
+
+    if type(exception) in exc_map:
+        mapped = exc_map[type(exception)] if has_mapping else exception
+        return cast("Outcome[T, E_in | E_out]", Outcome(default, mapped))
+
+    return cast("Outcome[T, E_in | E_out]", Outcome(default, exception))
+
+
 class _CastTypesOutcome[T_inner, E_inner]:
     def __init__(self, owner: Outcome[T_inner, E_inner]) -> None:
         self._owner = owner

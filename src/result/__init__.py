@@ -14,7 +14,7 @@ from .combinators import (
     validate,
     validate_async,
 )
-from .outcome import Outcome, catch_outcome
+from .outcome import Outcome, as_outcome, catch_outcome
 from .result import (
     CatchContext,
     Do,
@@ -25,6 +25,7 @@ from .result import (
     Result,
     UnwrapError,
     any_ok,
+    as_err,
     catch,
     catch_call,
     combine,
@@ -51,6 +52,8 @@ __all__ = [
     "UnwrapError",
     "add_context",
     "any_ok",
+    "as_err",
+    "as_outcome",
     "catch",
     "catch_call",
     "catch_outcome",

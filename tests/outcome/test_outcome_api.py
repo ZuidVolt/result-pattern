@@ -4,7 +4,7 @@
 from typing import Any
 
 from result import Err, Ok, is_err
-from result.outcome import Outcome, catch_outcome
+from result.outcome import Outcome, as_outcome, catch_outcome
 
 
 def test_outcome_native_unpacking() -> None:
@@ -146,3 +146,19 @@ def test_catch_outcome_api() -> None:
         return int(s)
 
     assert risky("abc") == Outcome(-1, "invalid")
+
+
+def test_as_outcome_pinpoint() -> None:
+    """Verify as_outcome for manual exception lifting."""
+    e = ValueError("fail")
+    # 1. Simple lift
+    assert as_outcome(e, default=0) == Outcome(0, e)
+
+    # 2. Mapping
+    assert as_outcome(e, default=10, mapping={ValueError: "mapped"}) == Outcome(10, "mapped")
+
+    # 3. Mismatch
+    assert as_outcome(e, default=1, mapping={KeyError: "err"}) == Outcome(1, e)
+
+    # 4. map_to
+    assert as_outcome(e, default=-1, mapping=ValueError, map_to="fail") == Outcome(-1, "fail")

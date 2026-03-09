@@ -25,6 +25,7 @@ from result import (
     Ok,
     Result,
     any_ok,
+    as_err,
     catch,
     catch_call,
     combine,
@@ -239,6 +240,16 @@ def test_inference_catch_call() -> None:
     if is_err(res2):
         err = res2.err()
         assert isinstance(err, ValueError | TypeError)
+
+
+def test_inference_as_err() -> None:
+    """Verify type tracing for as_err."""
+    e = ValueError("fail")
+    res = as_err(e, {ValueError: "invalid"})
+    if is_err(res):
+        # Checker should know it's str | ValueError
+        val: str | ValueError = res.err()
+        assert val == "invalid"
 
 
 def test_inference_result_map_exc() -> None:

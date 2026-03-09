@@ -18,6 +18,7 @@ from result import (
     OkErr,
     Result,
     any_ok,
+    as_err,
     catch,
     catch_call,
     combine,
@@ -467,6 +468,24 @@ def test_catch_call_inline() -> None:
 
     # Test tuple of exceptions
     assert is_err(catch_call((json.JSONDecodeError, TypeError), json.loads, 123))
+
+
+def test_as_err_pinpoint() -> None:
+    """Verify as_err for manual exception lifting."""
+    # 1. Simple lift
+    e = ValueError("fail")
+    assert as_err(e) == Err(e)
+
+    # 2. Lift with dict mapping
+    assert as_err(e, {ValueError: "mapped"}) == Err("mapped")
+    assert as_err(e, {TypeError: "wrong"}) == Err(e)
+
+    # 3. Lift with type and map_to
+    assert as_err(e, ValueError, map_to="mapped") == Err("mapped")
+    assert as_err(e, TypeError, map_to="mapped") == Err(e)
+
+    # 4. Lift with tuple mapping
+    assert as_err(e, (ValueError, TypeError), map_to="mapped") == Err("mapped")
 
 
 def test_partition_exceptions_api() -> None:

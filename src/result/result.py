@@ -1574,6 +1574,55 @@ def catch_call(
         return Err(e)
 
 
+def as_err[E_in: Exception, E_out](
+    exception: E_in,
+    mapping: type[Exception] | tuple[type[Exception], ...] | Mapping[type[Exception], E_out] | None = None,
+    *,
+    map_to: E_out | None = None,
+) -> Err[E_in | E_out]:
+    """Lift a caught exception into an Err variant with optional mapping.
+
+    This pinpoint utility is ideal for manual conversion inside standard
+    try/except blocks. It uses the same mapping logic as the @catch decorator.
+
+    Args:
+        exception: The exception instance to wrap.
+        mapping: Optional exception type, tuple, or dict for transformation.
+        map_to: Optional value to use as the error if mapping is a type/tuple.
+
+    Returns:
+        An Err variant containing the (potentially mapped) error.
+
+    Examples:
+        >>> try:
+        ...     raise ValueError("fail")
+        ... except Exception as e:
+        ...     res = as_err(e, {ValueError: "invalid"})
+        >>> res
+        Err('invalid')
+
+        >>> # Using map_to
+        >>> try:
+        ...     raise ValueError("fail")
+        ... except Exception as e:
+        ...     res = as_err(e, ValueError, map_to="mapped")
+        >>> res
+        Err('mapped')
+
+    """
+    if mapping is None:
+        return Err(exception)
+
+    exc_map = _resolve_mapping(mapping, map_to)
+    has_mapping = map_to is not None or isinstance(mapping, Mapping)
+
+    if type(exception) in exc_map:
+        mapped = exc_map[type(exception)] if has_mapping else exception
+        return Err(mapped)
+
+    return Err(exception)
+
+
 def do[T_co, E_co](gen: Generator[Result[T_co, E_co], Any, T_co]) -> Result[T_co, E_co]:
     """Helper for inline synchronous do-notation (generator expressions).
 

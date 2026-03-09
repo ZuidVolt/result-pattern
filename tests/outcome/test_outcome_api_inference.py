@@ -5,7 +5,7 @@
 from typing import Any
 
 from result import is_ok
-from result.outcome import Outcome, catch_outcome
+from result.outcome import Outcome, as_outcome, catch_outcome
 
 
 def test_inference_outcome_mapping():
@@ -67,3 +67,13 @@ def test_inference_catch_outcome():
     # Should be Outcome[int, str | ValueError]
     val: int = res.value
     assert val == 0
+
+
+def test_inference_as_outcome():
+    """Verify type tracing for as_outcome."""
+    e = ValueError("fail")
+    res = as_outcome(e, default=10, mapping={ValueError: "mapped"})
+    val: int = res.value
+    err: Any = res.error
+    assert val == 10
+    assert err == "mapped"

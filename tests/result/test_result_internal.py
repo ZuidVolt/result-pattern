@@ -92,14 +92,22 @@ async def test_exhaustive_variant_behavior_property(val: int) -> None:
 
 def test_educational_safeguards() -> None:
     """Verify that common API mistakes trigger educational guidance."""
-    res_ok = Ok(10)
+    magic_val = 10
+    res_ok = Ok(magic_val)
     res_err = Err("fail")
 
-    for variant in [res_ok, res_err]:
-        # Direct property access disabled
-        with pytest.raises(AttributeError, match=r"Direct access to '.value'"):
-            _ = variant.value
+    # 1. Direct access is now allowed on narrowed variants to support named match args
+    assert res_ok.value == magic_val
+    assert res_err.error == "fail"
 
+    # 2. But cross-access still triggers the safeguard via __getattr__
+    with pytest.raises(AttributeError, match=r"Direct access to '.error'"):
+        _ = res_ok.error  # type: ignore
+
+    with pytest.raises(AttributeError, match=r"Direct access to '.value'"):
+        _ = res_err.value  # type: ignore
+
+    for variant in [res_ok, res_err]:
         # Crashing operations isolated in .unsafe
         for method in ["unwrap", "unwrap_err", "expect", "expect_err", "unwrap_or_raise"]:
             with pytest.raises(AttributeError, match=r"isolated in the '.unsafe' namespace"):
@@ -331,7 +339,7 @@ def test_flow_internal_logic() -> None:
 def test_catch_call_internal_logic() -> None:
     """Exercise catch_call with various arguments."""
 
-    def add_kwargs(a: int, b: int = 0) -> int:  # noqa: FURB118
+    def add_kwargs(a: int, b: int = 0) -> int:
         return a + b
 
     assert catch_call(ValueError, operator.add, 1, 2) == Ok(3)
@@ -390,3 +398,34 @@ async def test_instructional_async_error() -> None:
 
     with pytest.raises(UnwrapError, match="Note: Async generators cannot use 'return value'"):
         await empty_workflow()
+
+
+def test_do_notation_outcome_safety_invariant() -> None:
+    """Invariant: do_notation raises TypeError with helpful message when yielding Outcome."""
+    from result.outcome import Outcome  # noqa: PLC0415
+
+    out = Outcome(10, "warning")
+
+    @do_notation
+    def workflow() -> Do[int, Any]:
+        yield out
+        return 1  # noqa: B901
+
+    with pytest.raises(TypeError, match="Cannot yield Outcome in do_notation"):
+        workflow()
+
+
+@pytest.mark.asyncio
+async def test_do_notation_async_outcome_safety_invariant() -> None:
+    """Invariant: do_notation_async raises TypeError with helpful message when yielding Outcome."""
+    from result.outcome import Outcome  # noqa: PLC0415
+
+    out = Outcome(10, "warning")
+
+    @do_notation_async
+    async def workflow_async() -> DoAsync[int, Any]:
+        yield out
+        yield Ok(1)
+
+    with pytest.raises(TypeError, match="Cannot yield Outcome in do_notation_async"):
+        await workflow_async()

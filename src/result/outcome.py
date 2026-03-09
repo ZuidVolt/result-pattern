@@ -41,6 +41,30 @@ class Outcome[T, E](NamedTuple):
     value: T
     error: E | Any | None = None
 
+    def __bool__(self) -> bool:
+        """Truthiness check. Returns True if there are no errors."""
+        return not self.has_error()
+
+    def __add__(self, other: Any) -> Outcome[Any, Any]:
+        """Support addition (+) operator.
+
+        Combines values using + and accumulates any errors.
+        """
+        if isinstance(other, Outcome):
+            errs: list[Any] = []
+            if self.error is not None:
+                if isinstance(self.error, list):
+                    errs.extend(self.error)
+                else:
+                    errs.append(self.error)
+            if other.error is not None:
+                if isinstance(other.error, list):
+                    errs.extend(other.error)
+                else:
+                    errs.append(other.error)
+            return Outcome(self.value + other.value, errs or None)  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
+        return NotImplemented
+
     @property
     def unsafe(self) -> _OutcomeUnsafe[T, E]:
         """Namespace for operations that bypass standard type safety.

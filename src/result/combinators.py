@@ -11,7 +11,7 @@ short-circuiting iteration, concurrent mapping, and functional pipelining.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from .result import Err, Ok, Result
 
@@ -156,8 +156,13 @@ def ensure[E](condition: bool, error: E) -> Result[None, E]:  # noqa: FBT001
     return Ok(None) if condition else Err(error)
 
 
-def add_context[T, E](res: Result[T, E], context: str) -> Result[T, str]:
+def add_context[T, E](res: Result[T, E], context: str) -> Result[T, Any]:
     """Enrich an error payload with additional context if the result is an Err.
+
+    This utility is polymorphic:
+    - If error is a list, it applies context to every item.
+    - If error is an Exception, it converts it to str before prepending context.
+    - Otherwise, it stringifies the error and prepends context.
 
     Args:
         res: The original Result.
@@ -170,9 +175,16 @@ def add_context[T, E](res: Result[T, E], context: str) -> Result[T, str]:
         >>> add_context(Err("refused"), "Connection")
         Err('Connection: refused')
 
+        >>> # Handling lists (e.g. from validate())
+        >>> add_context(Err(["e1", "e2"]), "Batch")
+        Err(['Batch: e1', 'Batch: e2'])
+
     """
     if isinstance(res, Err):
-        return Err(f"{context}: {res._error}")
+        err = res._error
+        if isinstance(err, list):
+            return Err([f"{context}: {e}" for e in err])  # pyright: ignore[reportUnknownVariableType]
+        return Err(f"{context}: {err}")
     return res
 
 
@@ -276,7 +288,27 @@ def partition_exceptions[T, E: BaseException](
 # --- Asynchronous Combinators ---
 
 
-async def gather_results[T, E](*coroutines: Awaitable[Result[T, E]]) -> Result[list[T], E]:
+@overload
+async def gather_results[T, E](
+    *coroutines: Awaitable[Result[T, E]],
+    cancel_on_err: bool = True,
+    panic: Literal[True] = True,
+) -> Result[list[T], E]: ...
+
+
+@overload
+async def gather_results[T, E](
+    *coroutines: Awaitable[Result[T, E]],
+    cancel_on_err: bool = True,
+    panic: Literal[False],
+) -> Result[list[T], E | TypeError]: ...
+
+
+async def gather_results[T, E](  # noqa: C901
+    *coroutines: Awaitable[Result[T, E]],
+    cancel_on_err: bool = True,
+    panic: bool = True,
+) -> Any:
     """Monadic 'All-or-Nothing' async concurrency.
 
     Runs multiple Result-returning tasks concurrently. Resolves to the
@@ -284,9 +316,15 @@ async def gather_results[T, E](*coroutines: Awaitable[Result[T, E]]) -> Result[l
 
     Args:
         *coroutines: Async tasks that return a Result.
+        cancel_on_err: If True, cancels all pending tasks when an Err is encountered.
+        panic: If True (default), raises TypeError on contract violations.
+            If False, returns Err(TypeError).
 
     Returns:
         The first Err found, or Ok containing a list of all results in order.
+
+    Raises:
+        TypeError: If a task returns a non-Result type and panic is True.
 
     Examples:
         >>> async def worker(n):
@@ -295,16 +333,60 @@ async def gather_results[T, E](*coroutines: Awaitable[Result[T, E]]) -> Result[l
         Ok([2, 4])
 
     """
-    results = await asyncio.gather(*coroutines)
-    values: list[T] = []
-    for res in results:
-        if isinstance(res, Err):
-            return res
-        values.append(res._value)
-    return Ok(values)
+    if not coroutines:
+        return Ok([])
+
+    tasks = [asyncio.ensure_future(c) for c in coroutines]
+    pending: set[asyncio.Future[Any]] = set(tasks)
+
+    try:  # noqa: PLR1702
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                res = task.result()
+                if not isinstance(res, Ok | Err):  # pyright: ignore[reportUnnecessaryIsInstance]
+                    msg = f"gather_results expected Result, got {type(res).__name__}"
+                    if panic:
+                        raise TypeError(msg)  # noqa: TRY301
+                    # Treat type error as a fatal Err
+                    if cancel_on_err:
+                        for p in pending:
+                            p.cancel()
+                    return Err(TypeError(msg))
+
+                if isinstance(res, Err):
+                    if cancel_on_err:
+                        for p in pending:
+                            p.cancel()
+                    return res  # pyright: ignore[reportUnknownVariableType]
+
+        # All tasks succeeded, return values in original order
+        return Ok([t.result()._value for t in tasks])
+    except Exception:
+        # Cleanup pending tasks on unexpected exceptions (like Cancellation from outside)
+        for t in pending:
+            t.cancel()
+        raise
 
 
-async def validate_async[T, E](*coroutines: Awaitable[Result[T, E]]) -> Result[list[T], list[E]]:
+@overload
+async def validate_async[T, E](
+    *coroutines: Awaitable[Result[T, E]],
+    panic: Literal[True] = True,
+) -> Result[list[T], list[E]]: ...
+
+
+@overload
+async def validate_async[T, E](
+    *coroutines: Awaitable[Result[T, E]],
+    panic: Literal[False],
+) -> Result[list[T], list[E | TypeError]]: ...
+
+
+async def validate_async[T, E](
+    *coroutines: Awaitable[Result[T, E]],
+    panic: bool = True,
+) -> Any:
     """Applicative async concurrency.
 
     Waits for ALL tasks to finish. If any failed, returns Err containing
@@ -312,9 +394,14 @@ async def validate_async[T, E](*coroutines: Awaitable[Result[T, E]]) -> Result[l
 
     Args:
         *coroutines: Async tasks that return a Result.
+        panic: If True (default), raises TypeError on contract violations.
+            If False, returns Err([TypeError]).
 
     Returns:
         Ok(list) if all succeed, or Err(list) containing all errors.
+
+    Raises:
+        TypeError: If a task returns a non-Result type and panic is True.
 
     Examples:
         >>> async def fail(msg):
@@ -323,12 +410,33 @@ async def validate_async[T, E](*coroutines: Awaitable[Result[T, E]]) -> Result[l
         Err(['e1', 'e2'])
 
     """
-    results = await asyncio.gather(*coroutines)
-    errors: list[E] = []
+    if not coroutines:
+        return Ok([])
+
+    tasks = [asyncio.ensure_future(c) for c in coroutines]
+    pending: set[asyncio.Future[Any]] = set(tasks)
+
+    try:
+        # For Applicative, we wait for everything to finish
+        await asyncio.gather(*tasks, return_exceptions=False)
+    except Exception:
+        # If the gather itself is cancelled or fails, cleanup pending
+        for t in pending:
+            if not t.done():
+                t.cancel()
+        raise
+
+    errors: list[Any] = []
     values: list[T] = []
 
-    for res in results:
-        if isinstance(res, Err):
+    for t in tasks:
+        res = t.result()
+        if not isinstance(res, Ok | Err):  # pyright: ignore[reportUnnecessaryIsInstance]
+            msg = f"validate_async expected Result, got {type(res).__name__}"
+            if panic:
+                raise TypeError(msg)
+            errors.append(TypeError(msg))
+        elif isinstance(res, Err):
             errors.append(res._error)
         else:
             values.append(res._value)
@@ -338,12 +446,36 @@ async def validate_async[T, E](*coroutines: Awaitable[Result[T, E]]) -> Result[l
     return Ok(values)
 
 
+@overload
 async def traverse_async[T, U, E](
     items: Iterable[T],
     func: Callable[[T], Awaitable[Result[U, E]]],
     *,
     limit: int | None = None,
-) -> Result[list[U], E]:
+    cancel_on_err: bool = True,
+    panic: Literal[True] = True,
+) -> Result[list[U], E]: ...
+
+
+@overload
+async def traverse_async[T, U, E](
+    items: Iterable[T],
+    func: Callable[[T], Awaitable[Result[U, E]]],
+    *,
+    limit: int | None = None,
+    cancel_on_err: bool = True,
+    panic: Literal[False],
+) -> Result[list[U], E | TypeError]: ...
+
+
+async def traverse_async[T, U, E](
+    items: Iterable[T],
+    func: Callable[[T], Awaitable[Result[U, E]]],
+    *,
+    limit: int | None = None,
+    cancel_on_err: bool = True,
+    panic: bool = True,
+) -> Any:
     """Concurrently map a fallible async function over an iterable.
 
     Short-circuits on the first error. Includes an optional semaphore
@@ -353,15 +485,11 @@ async def traverse_async[T, U, E](
         items: An iterable of inputs.
         func: An async function returning a Result.
         limit: Optional concurrency limit (semaphore).
+        cancel_on_err: If True, cancels pending tasks on first error.
+        panic: If True (default), raises TypeError on contract violations.
 
     Returns:
         Ok(list) of transformed values, or the first Err found.
-
-    Examples:
-        >>> async def fetch(url):
-        ...     return Ok(f"data from {url}")
-        >>> await traverse_async(["a.com", "b.com"], fetch, limit=2)
-        Ok(['data from a.com', 'data from b.com'])
 
     """
     if limit is not None:
@@ -375,7 +503,9 @@ async def traverse_async[T, U, E](
     else:
         tasks = [func(item) for item in items]  # type: ignore[misc]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
 
-    return await gather_results(*tasks)
+    if panic:
+        return await gather_results(*tasks, cancel_on_err=cancel_on_err, panic=True)
+    return await gather_results(*tasks, cancel_on_err=cancel_on_err, panic=False)
 
 
 def combine_outcomes[T, E](outcomes: Iterable[Outcome[T, E]]) -> Outcome[list[T], list[E]]:
@@ -410,38 +540,98 @@ def combine_outcomes[T, E](outcomes: Iterable[Outcome[T, E]]) -> Outcome[list[T]
     return Outcome(all_values, final_err)
 
 
-async def gather_outcomes[T, E](*coroutines: Awaitable[Outcome[T, Any]]) -> Outcome[list[T], list[Any]]:
+@overload
+async def gather_outcomes[T, E](
+    *coroutines: Awaitable[Outcome[T, Any]],
+    panic: Literal[True] = True,
+) -> Outcome[list[T], list[Any]]: ...
+
+
+@overload
+async def gather_outcomes[T, E](
+    *coroutines: Awaitable[Outcome[T, Any]],
+    panic: Literal[False],
+) -> Outcome[list[T], list[Any] | TypeError]: ...
+
+
+async def gather_outcomes[T, E](
+    *coroutines: Awaitable[Outcome[T, Any]],
+    panic: bool = True,
+) -> Any:
     """Concurrently await multiple Outcome-returning tasks and merge them.
 
     Ensures that every task completes and all diagnostics are gathered.
 
     Args:
         *coroutines: Async tasks returning Outcomes.
+        panic: If True (default), raises TypeError on contract violations.
+            If False, returns Outcome([], TypeError).
 
     Returns:
         A master Outcome containing all values and combined errors.
 
+    Raises:
+        TypeError: If a task returns a non-Outcome type and panic is True.
+
     """
+    if not coroutines:
+        from .outcome import Outcome  # noqa: PLC0415
+
+        return Outcome[Any, Any]([], None)
+
     results = await asyncio.gather(*coroutines)
-    return combine_outcomes(results)
+
+    for r in results:
+        if type(r).__name__ != "Outcome":
+            msg = f"gather_outcomes expected Outcome, got {type(r).__name__}"
+            if panic:
+                raise TypeError(msg)
+            from .outcome import Outcome  # noqa: PLC0415
+
+            return Outcome[Any, Any]([], TypeError(msg))
+
+    return cast("Any", combine_outcomes(results))
+
+
+@overload
+async def traverse_async_outcome[T, U, E](
+    items: Iterable[T],
+    func: Callable[[T], Awaitable[Outcome[U, Any]]],
+    *,
+    panic: Literal[True] = True,
+) -> Outcome[list[U], list[Any]]: ...
+
+
+@overload
+async def traverse_async_outcome[T, U, E](
+    items: Iterable[T],
+    func: Callable[[T], Awaitable[Outcome[U, Any]]],
+    *,
+    panic: Literal[False],
+) -> Outcome[list[U], list[Any] | TypeError]: ...
 
 
 async def traverse_async_outcome[T, U, E](
     items: Iterable[T],
     func: Callable[[T], Awaitable[Outcome[U, Any]]],
-) -> Outcome[list[U], list[Any]]:
+    *,
+    panic: bool = True,
+) -> Any:
     """Concurrent map-reduce for fault-tolerant workloads.
 
     Args:
         items: An iterable of inputs.
         func: An async function returning an Outcome.
+        panic: If True (default), raises TypeError on contract violations.
 
     Returns:
         A master Outcome of the batch.
 
     """
     tasks = [func(item) for item in items]
-    return await gather_outcomes(*tasks)
+    if panic:
+        return await gather_outcomes(*tasks, panic=True)
+    return await gather_outcomes(*tasks, panic=False)
 
 
 def partition_results[T, E](results: Iterable[Result[T, E]]) -> tuple[list[T], list[E]]:
@@ -468,3 +658,41 @@ def partition_results[T, E](results: Iterable[Result[T, E]]) -> tuple[list[T], l
             errors.append(res._error)
 
     return values, errors
+
+
+def partition_map[T, U, E](
+    items: Iterable[T], func: Callable[[T], Result[U, E]]
+) -> tuple[list[tuple[T, U]], list[tuple[T, E]]]:
+    """Map a fallible function over an iterable and partition into successes and failures.
+
+    Unlike `partition_results`, this preserves the original input item alongside
+    the result, making it easy to identify which inputs failed.
+
+    Args:
+        items: An iterable of inputs.
+        func: A function returning a Result for each input.
+
+    Returns:
+        A tuple of (ok_pairs, err_pairs) where each pair is (original_item, value_or_error).
+
+    Examples:
+        >>> def parse(s: str) -> Result[int, str]:
+        ...     return Ok(int(s)) if s.isdigit() else Err(f"not a digit: {s}")
+        >>> oks, errs = partition_map(["1", "a", "2"], parse)
+        >>> oks
+        [('1', 1), ('2', 2)]
+        >>> errs
+        [('a', 'not a digit: a')]
+
+    """
+    oks: list[tuple[T, U]] = []
+    errs: list[tuple[T, E]] = []
+
+    for item in items:
+        res = func(item)
+        if isinstance(res, Ok):
+            oks.append((item, res._value))
+        else:
+            errs.append((item, res._error))
+
+    return oks, errs

@@ -339,6 +339,31 @@ def test_convenience_utils() -> None:
     assert res_ok.or_else(recover) == Ok(10)
 
 
+def test_dunder_methods() -> None:
+    """Verify __bool__, __hash__, and __add__ on Result variants."""
+    ok1 = Ok(10)
+    ok2 = Ok(5)
+    err1 = Err("fail")
+    err2 = Err("fatal")
+
+    # __bool__
+    assert bool(ok1) is True
+    assert bool(err1) is False
+
+    # __hash__
+    assert hash(Ok(1)) != hash(Err(1))
+    # Should be usable in sets/dicts
+    d = {ok1: "a", err1: "b"}
+    assert d[Ok(10)] == "a"
+    assert d[Err("fail")] == "b"
+
+    # __add__
+    assert ok1 + ok2 == Ok(15)
+    assert ok1 + err1 == err1
+    assert err1 + ok1 == err1
+    assert err1 + err2 == err1
+
+
 def test_pattern_matching_type_narrowing() -> None:
     """Verify that pattern matching correctly narrows types for static analysis.
 
@@ -370,7 +395,7 @@ def test_pattern_matching_type_narrowing() -> None:
 def test_transpose_property(val: int | None) -> None:
     """Verify transpose swapping between Result[T | None] and Result[T] | None."""
     res: Result[int | None, str] = Ok(val)
-    transposed: Result[int | None, str] | None = res.transpose()
+    transposed = res.transpose()
     if val is None:
         assert transposed is None
     else:
@@ -461,13 +486,33 @@ def test_unwrap_or_default_api() -> None:
     assert Err("fail").unsafe.unwrap_or_default() is None
 
 
-def test_catch_call_inline() -> None:
-    """Verify catch_call executing functions inline with exception trapping."""
+def test_catch_call_integration_mapping() -> None:
+    """Integration: Verify catch_call mapping in a realistic scenario."""
+
+    class ServiceError(StrEnum):
+        NOT_FOUND = "not_found"
+        DB_ERROR = "db_error"
+
+    data: dict[str, int] = {"a": 1}
+
+    # 1. Simple catch
     assert catch_call(json.JSONDecodeError, json.loads, '{"a": 1}') == Ok({"a": 1})
     assert is_err(catch_call(json.JSONDecodeError, json.loads, "invalid"))
 
-    # Test tuple of exceptions
-    assert is_err(catch_call((json.JSONDecodeError, TypeError), json.loads, 123))
+    def get_val(k: str) -> int:
+        return data[k]
+
+    # 2. Using map_to for single exception
+    res = catch_call(KeyError, get_val, "b", map_to=ServiceError.NOT_FOUND)
+    assert res == Err(ServiceError.NOT_FOUND)
+
+    # 3. Using explicit mapping dict
+    mapping: dict[type[Exception], Any] = {KeyError: ServiceError.NOT_FOUND, ValueError: ServiceError.DB_ERROR}
+    res2 = catch_call(mapping, get_val, "b")
+    assert res2 == Err(ServiceError.NOT_FOUND)
+
+    # 4. Successful path preserves Ok
+    assert catch_call(KeyError, get_val, "a", map_to=ServiceError.NOT_FOUND) == Ok(1)
 
 
 def test_as_err_pinpoint() -> None:
@@ -554,11 +599,19 @@ def test_ensure_guards() -> None:
     assert ensure(incorrect_sum == 1 + 1, "math fail") == Err("math fail")
 
 
-def test_add_context_breadcrumbs() -> None:
-    """Verify add_context enriching error payloads."""
-    res: Result[int, str] = Err("raw error")
-    assert add_context(res, "In main") == Err("In main: raw error")
-    assert add_context(Ok(1), "ignored") == Ok(1)
+@given(st.one_of(st.text(), st.lists(st.text())), st.text())
+def test_add_context_polymorphism_property(err_data: str | list[str], context: str) -> None:
+    """Invariant: add_context applies breadcrumbs to strings and collections correctly."""
+    res = Err(err_data)
+    ctx_res: Result[Any, Any] = add_context(res, context)
+
+    if isinstance(err_data, list):
+        assert isinstance(ctx_res.err(), list)
+        # Check that every element was transformed
+        for original, transformed in zip(err_data, cast("list[str]", ctx_res.err()), strict=True):
+            assert transformed == f"{context}: {original}"
+    else:
+        assert ctx_res.err() == f"{context}: {err_data}"
 
 
 def test_flow_pipeline() -> None:

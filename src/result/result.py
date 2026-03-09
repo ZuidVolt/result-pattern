@@ -135,7 +135,7 @@ class Ok[T_co]:
     """
 
     _value: T_co
-    __match_args__ = ("_value",)
+    __match_args__ = ("value",)
 
     def __init__(self, value: T_co) -> None:
         """Initialize an Ok variant.
@@ -145,6 +145,38 @@ class Ok[T_co]:
 
         """
         object.__setattr__(self, "_value", value)
+
+    @property
+    def value(self) -> T_co:
+        """Access the success value.
+
+        Note: While accessible on the Ok variant, it is recommended to use
+        pattern matching or functional methods for maximum safety.
+        """
+        return self._value
+
+    def __bool__(self) -> Literal[True]:
+        """Truthiness check. Returns True for Ok.
+
+        This enables idiomatic Python conditional narrowing:
+        `if res: # type is narrowed to Ok`
+        """
+        return True
+
+    def __hash__(self) -> int:
+        """Explicit hash to prevent collisions with Err variants."""
+        return hash((Ok, self._value))
+
+    def __add__(self, other: Any) -> Result[Any, Any]:
+        """Support short-circuiting addition (+) operator.
+
+        If both are Ok, returns Ok(a + b). If other is Err, returns other.
+        """
+        if isinstance(other, Ok):
+            return Ok(self._value + other._value)  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
+        if isinstance(other, Err):
+            return other  # pyright: ignore[reportUnknownVariableType]
+        return NotImplemented
 
     def __iter__(self) -> Generator[Any, Any, T_co]:
         """Allow use in generator expressions for do-notation."""
@@ -608,7 +640,13 @@ class Ok[T_co]:
         """
         return None
 
-    def transpose(self) -> Result[T_co, E_co] | None:
+    @overload
+    def transpose[U](self: Ok[U | None]) -> Ok[U] | None: ...
+
+    @overload
+    def transpose(self) -> Ok[T_co] | None: ...
+
+    def transpose(self) -> Ok[Any] | None:
         """Transpose a Result of an Optional into an Optional of a Result.
 
         Ok(None) becomes None. Ok(Some(v)) becomes Ok(v).
@@ -625,7 +663,7 @@ class Ok[T_co]:
         """
         if self._value is None:
             return None
-        return cast("Result[T_co, E_co] | None", self)
+        return cast("Ok[Any]", self)
 
     def product[U, E2](self, other: Result[U, E2]) -> Result[tuple[T_co, U], E_co | E2]:  # type: ignore[valid-type]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
         """Combine two results into a result of a tuple (Zip).
@@ -663,7 +701,7 @@ class Err[E_co]:
     """
 
     _error: E_co
-    __match_args__ = ("_error",)
+    __match_args__ = ("error",)
 
     def __init__(self, error: E_co) -> None:
         """Initialize an Err variant.
@@ -673,6 +711,36 @@ class Err[E_co]:
 
         """
         object.__setattr__(self, "_error", error)
+
+    @property
+    def error(self) -> E_co:
+        """Access the error state.
+
+        Note: While accessible on the Err variant, it is recommended to use
+        pattern matching or functional methods for maximum safety.
+        """
+        return self._error
+
+    def __bool__(self) -> Literal[False]:
+        """Truthiness check. Returns False for Err.
+
+        This enables idiomatic Python conditional narrowing:
+        `if res: # type is narrowed to Ok`
+        """
+        return False
+
+    def __hash__(self) -> int:
+        """Explicit hash to prevent collisions with Ok variants."""
+        return hash((Err, self._error))
+
+    def __add__(self, other: Any) -> Result[Any, Any]:
+        """Support short-circuiting addition (+) operator.
+
+        Always returns self for Err variants, short-circuiting the addition.
+        """
+        if isinstance(other, (Ok, Err)):
+            return self
+        return NotImplemented
 
     def __iter__(self) -> Generator[Result[Any, E_co], Any, Never]:
         """Allow use in generator expressions for do-notation."""
@@ -1520,8 +1588,9 @@ def catch_call[T, E: Exception](
     exceptions: type[E],
     func: Callable[..., T],
     *args: Any,
+    map_to: Any = None,
     **kwargs: Any,
-) -> Result[T, E]: ...
+) -> Result[T, Any]: ...
 
 
 @overload
@@ -1529,8 +1598,18 @@ def catch_call[T, E1: Exception, E2: Exception](
     exceptions: tuple[type[E1], type[E2]],
     func: Callable[..., T],
     *args: Any,
+    map_to: Any = None,
     **kwargs: Any,
-) -> Result[T, E1 | E2]: ...
+) -> Result[T, Any]: ...
+
+
+@overload
+def catch_call[T](
+    exceptions: Mapping[type[Exception], Any],
+    func: Callable[..., T],
+    *args: Any,
+    **kwargs: Any,
+) -> Result[T, Any]: ...
 
 
 @overload
@@ -1538,14 +1617,17 @@ def catch_call[T](
     exceptions: tuple[type[Exception], ...],
     func: Callable[..., T],
     *args: Any,
+    map_to: Any = None,
     **kwargs: Any,
-) -> Result[T, Exception]: ...
+) -> Result[T, Any]: ...
 
 
 def catch_call(
     exceptions: Any,
     func: Any,
     *args: Any,
+    mapping: Mapping[type[Exception], Any] | None = None,
+    map_to: Any = None,
     **kwargs: Any,
 ) -> Any:
     """Execute a function inline and catch specified exceptions into a Result.
@@ -1554,24 +1636,36 @@ def catch_call(
     to define a new function or open a context manager block.
 
     Args:
-        exceptions: An exception type or tuple of types to catch.
+        exceptions: An exception type, tuple, or mapping to catch.
         func: The function to execute.
         *args: Positional arguments for the function.
+        mapping: Optional explicit mapping dictionary.
+        map_to: Optional value to use as the error if an exception matches.
         **kwargs: Keyword arguments for the function.
 
     Returns:
-        Ok(value) if successful, Err(exception) if a specified exception was raised.
+        Ok(value) if successful, Err(mapped_error) if a specified exception was raised.
 
     Examples:
         >>> import json
+        >>> # 1. Simple catch
         >>> catch_call(json.JSONDecodeError, json.loads, '{"key": "value"}')
         Ok({'key': 'value'})
 
+        >>> # 2. Catch with mapping
+        >>> catch_call(json.JSONDecodeError, json.loads, "invalid", map_to="bad_json")
+        Err('bad_json')
+
     """
+    exc_map = _resolve_mapping(mapping or exceptions, map_to)
+    catch_tuple = tuple(exc_map.keys())
+    has_mapping = map_to is not None or mapping is not None or isinstance(exceptions, Mapping)
+
     try:
         return Ok(func(*args, **kwargs))
-    except exceptions as e:
-        return Err(e)
+    except catch_tuple as e:
+        mapped = exc_map.get(type(e), e) if has_mapping else e
+        return Err(mapped)
 
 
 def as_err[E_in: Exception, E_out](
@@ -1692,6 +1786,19 @@ def _make_do_wrapper[T_local, E_local, **P](
             gen = func(*args, **kwargs)
             res = next(gen)
             while True:
+                if not isinstance(res, Ok | Err):  # pyright: ignore[reportUnnecessaryIsInstance]
+                    try:
+                        from .outcome import Outcome  # noqa: PLC0415
+
+                        if isinstance(res, Outcome):  # pyright: ignore[reportUnnecessaryIsInstance]
+                            fname = getattr(func, "__name__", "<func>")
+                            msg = f"Cannot yield Outcome in do_notation. Use 'yield {fname}(...).to_result()' instead."
+                            raise TypeError(msg)
+                    except ImportError:
+                        pass
+                    msg = f"do_notation yielded non-Result type: {type(res).__name__}"
+                    raise TypeError(msg)  # noqa: TRY301
+
                 if isinstance(res, Err):
                     return _apply_remap(res, remap)
                 res = gen.send(res._value)
@@ -1777,7 +1884,7 @@ def do_notation[T_local, E_local, **P](
     return decorator
 
 
-def _make_async_wrapper[T_local, E_local, **P](
+def _make_async_wrapper[T_local, E_local, **P](  # noqa: C901
     func: Callable[P, DoAsync[T_local, E_local]],
     catch_types: type[Exception] | tuple[type[Exception], ...] | None,
     remap: dict[type[Any], type[Any]] | None = None,
@@ -1787,13 +1894,28 @@ def _make_async_wrapper[T_local, E_local, **P](
     @wraps(func)
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> Result[Any, Any]:
         __tracebackhide__ = True
-        try:
+        try:  # noqa: PLR1702
             gen = func(*args, **kwargs)
             last_val: Result[Any, Any] | None = None
             try:
                 res = await anext(gen)
                 while True:
                     last_val = res
+                    if not isinstance(res, Ok | Err):  # pyright: ignore[reportUnnecessaryIsInstance]
+                        try:
+                            from .outcome import Outcome  # noqa: PLC0415
+
+                            if isinstance(res, Outcome):  # pyright: ignore[reportUnnecessaryIsInstance]
+                                fname = getattr(func, "__name__", "<func>")
+                                msg = f"Cannot yield Outcome in do_notation_async. Use 'yield {fname}(...).to_result()' instead."
+                                await gen.aclose()
+                                raise TypeError(msg)
+                        except ImportError:
+                            pass
+                        msg = f"do_notation_async yielded non-Result type: {type(res).__name__}"
+                        await gen.aclose()
+                        raise TypeError(msg)
+
                     if isinstance(res, Err):
                         res_final = _apply_remap(res, remap)
                         await gen.aclose()

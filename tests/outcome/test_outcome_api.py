@@ -3,6 +3,8 @@
 
 from typing import Any
 
+import pytest
+
 from result import Err, Ok, is_err
 from result.outcome import Outcome, as_outcome, catch_outcome
 
@@ -70,6 +72,27 @@ def test_outcome_accumulators() -> None:
     # 2. merge
     res: Outcome[tuple[int, int], Any] = Outcome(1, "err1").merge(Outcome(2, "err2"))
     assert res == Outcome((1, 2), ["err1", "err2"])
+
+
+def test_outcome_dunder_methods() -> None:
+    """Verify __bool__ and __add__ on Outcome."""
+    out1: Outcome[int, Any] = Outcome(10, None)
+    out2 = Outcome(20, "warn")
+    out3 = Outcome(5, ["err1", "err2"])
+
+    # __bool__
+    assert bool(out1) is True
+    assert bool(out2) is False
+    assert bool(out3) is False
+
+    # __add__
+    assert out1 + out1 == Outcome(20, None)
+    assert out1 + out2 == Outcome(30, ["warn"])
+    assert out2 + out3 == Outcome(25, ["warn", "err1", "err2"])
+
+    # Check invalid add
+    with pytest.raises(TypeError):
+        _ = out1 + 10  # pyright: ignore[reportUnknownArgumentType]
 
 
 def test_outcome_functional_chaining() -> None:

@@ -29,7 +29,7 @@ async def delayed_err[E](err: E, delay: float = 0.01) -> Result[Any, E]:
     return Err(err)
 
 
-async def delayed_outcome[T, E](val: T, err: E | None, delay: float = 0.01) -> Outcome[T, E]:  # noqa: RUF029
+async def delayed_outcome[T, E](val: T, err: E | None, delay: float = 0.01) -> Outcome[T, E]:
     await asyncio.sleep(delay)
     return Outcome(val, err)
 
@@ -45,11 +45,32 @@ async def test_gather_results_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_gather_results_fail_fast() -> None:
-    """Verify gather_results returns the first Err encounterd."""
+async def test_gather_results_fail_fast_cancellation() -> None:
+    """Verify gather_results returns the first Err encounterd and cancels others."""
     # The error is faster than the success
-    res = await gather_results(delayed_ok(1, 0.05), delayed_err("fail", 0.01))
+    task1 = asyncio.create_task(delayed_ok(1, 0.5))
+    task2 = asyncio.create_task(delayed_err("fail", 0.01))
+
+    res = await gather_results(task1, task2)
     assert res == Err("fail")
+
+    # Give the event loop a moment to process cancellations
+    await asyncio.sleep(0.01)
+
+    # Task1 should have been cancelled by gather_results
+    assert task1.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_gather_results_type_safety() -> None:
+    """Verify gather_results raises TypeError for non-Result returns."""
+
+    async def bad_worker() -> Any:
+        await asyncio.sleep(0)
+        return "not a result"
+
+    with pytest.raises(TypeError, match="expected Result, got str"):
+        await gather_results(bad_worker())
 
 
 @pytest.mark.asyncio
@@ -106,6 +127,18 @@ async def test_gather_outcomes_merging() -> None:
     )
     assert res.value == [1, 2, 3]
     assert res.error == ["w1", "w2", "w3"]
+
+
+@pytest.mark.asyncio
+async def test_gather_outcomes_type_safety() -> None:
+    """Verify gather_outcomes raises TypeError for non-Outcome returns."""
+
+    async def bad_worker() -> Any:
+        await asyncio.sleep(0)
+        return Ok("not an outcome")
+
+    with pytest.raises(TypeError, match="expected Outcome, got Ok"):
+        await gather_outcomes(bad_worker())
 
 
 @pytest.mark.asyncio

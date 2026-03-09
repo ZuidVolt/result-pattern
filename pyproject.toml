@@ -31,7 +31,13 @@ Repository = "https://github.com/ZuidVolt/result-pattern"
 packages = ["src/result"]
 
 [tool.hatch.build.targets.sdist]
-include = ["README.md", "src/result/**"]
+[tool.hatch.build.targets.sdist]
+include = [
+    "README.md",
+    "LICENSE",
+    "src/result/**",
+    "src/result/py.typed",
+]
 
 # ----------------------
 # Dev & tooling settings

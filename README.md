@@ -24,10 +24,12 @@ A `Result` is a **Sum Type** representing a state of being either completely suc
 ```python
 from result import Ok, Err, Result, is_ok
 
+
 def divide(a: int, b: int) -> Result[float, str]:
     if b == 0:
         return Err("Cannot divide by zero")
     return Ok(a / b)
+
 
 res = divide(10, 2)
 if is_ok(res):
@@ -39,8 +41,10 @@ if is_ok(res):
 Leverage Python 3.10+ native matching with optimized `__match_args__`:
 ```python
 match divide(10, 0):
-    case Ok(val): print(f"Value: {val}")
-    case Err(msg): print(f"Error: {msg}")
+    case Ok(val):
+        print(f"Value: {val}")
+    case Err(msg):
+        print(f"Error: {msg}")
 ```
 
 ### 3. Functional Chaining
@@ -60,11 +64,13 @@ Lift exception-throwing code into `Result` containers with zero boilerplate.
 ```python
 from result import catch
 
+
 @catch(ValueError)
 def parse_int(s: str) -> int:
     return int(s)
 
-parse_int("10")   # Ok(10)
+
+parse_int("10")  # Ok(10)
 parse_int("abc")  # Err(ValueError(...))
 ```
 
@@ -74,12 +80,15 @@ Immediately sanitize wild exceptions into strictly typed Domain Enums.
 from enum import StrEnum
 from result import catch
 
+
 class ErrorCode(StrEnum):
     INVALID = "invalid_input"
+
 
 # Single mapping
 @catch(ValueError, map_to=ErrorCode.INVALID)
 def risky_op(s: str): ...
+
 
 # Multiple mapping dictionary
 @catch({ValueError: ErrorCode.INVALID, KeyError: "missing"})
@@ -104,12 +113,13 @@ Write procedural-looking code that automatically handles short-circuiting logic.
 ```python
 from result import do_notation, Do
 
+
 @do_notation
 def compile_pipeline(source: str) -> Do[str, Exception]:
-    tokens = yield tokenize(source)      # Returns list[Token] or short-circuits Err
-    ast    = yield parse(tokens)         # Returns AST or short-circuits Err
-    code   = yield generate(ast)
-    return code                          # Automatically wrapped in Ok
+    tokens = yield tokenize(source)  # Returns list[Token] or short-circuits Err
+    ast = yield parse(tokens)  # Returns AST or short-circuits Err
+    code = yield generate(ast)
+    return code  # Automatically wrapped in Ok
 ```
 
 ---
@@ -139,9 +149,11 @@ While `Result` is mathematically pure, real-world systems often require **fault 
 ```python
 from result import Outcome
 
+
 def parse_with_diagnostics(source: str) -> Outcome[AST, list[str]]:
     # build AST and accumulate errors...
     return Outcome(ast, accumulated_errors)
+
 
 # 1. Procedural Unpacking (Go/Odin style)
 ast, errors = parse_with_diagnostics(src)
@@ -150,6 +162,7 @@ if errors:
 
 # 2. Accumulation
 new_outcome = Outcome(node, "e1").push_err("e2").merge(other_outcome)
+
 
 # 3. Transition to Strict (or_return)
 @do_notation
@@ -167,7 +180,7 @@ def strict_flow():
 Panics are isolated in the `.unsafe` namespace. Direct `.unwrap()` access is disabled at the root level to encourage safe functional patterns.
 ```python
 res = Err("fail")
-res.unsafe.unwrap() # Explicit panic
+res.unsafe.unwrap()  # Explicit panic
 ```
 
 ### True Covariance

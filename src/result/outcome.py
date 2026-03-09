@@ -26,34 +26,6 @@ U_cast = TypeVar("U_cast")
 F_cast = TypeVar("F_cast")
 
 
-class _CastTypesOutcome[T_inner, E_inner]:
-    def __init__(self, owner: Outcome[T_inner, E_inner]) -> None:
-        self._owner = owner
-
-    def __getitem__[U, F](self, _types: Any) -> Callable[[], Outcome[U, F]]:
-        return lambda: cast("Outcome[U_cast, F_cast]", self._owner)  # type: ignore[valid-type]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
-
-
-@dataclass(frozen=True, slots=True)
-class _OutcomeUnsafe[T_inner, E_inner]:
-    """Namespace for potentially unsafe operations on Outcome."""
-
-    _owner: Outcome[T_inner, E_inner]
-
-    @property
-    def cast_types(self) -> _CastTypesOutcome[T_inner, E_inner]:
-        """Zero-runtime-cost type hint override for strict variance edge cases.
-
-        This allows manually guiding the type checker when it fails to infer
-        complex union types correctly.
-
-        Example:
-            >>> res = Outcome(10, None).unsafe.cast_types[int, str]()
-
-        """
-        return _CastTypesOutcome(self._owner)
-
-
 class Outcome[T, E](NamedTuple):
     """A fault-tolerant Product Type holding a value and an error state.
 
@@ -462,3 +434,31 @@ def catch_outcome(
         return wrapper
 
     return decorator
+
+
+class _CastTypesOutcome[T_inner, E_inner]:
+    def __init__(self, owner: Outcome[T_inner, E_inner]) -> None:
+        self._owner = owner
+
+    def __getitem__[U, F](self, _types: Any) -> Callable[[], Outcome[U, F]]:
+        return lambda: cast("Outcome[U_cast, F_cast]", self._owner)  # type: ignore[valid-type]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
+
+
+@dataclass(frozen=True, slots=True)
+class _OutcomeUnsafe[T_inner, E_inner]:
+    """Namespace for potentially unsafe operations on Outcome."""
+
+    _owner: Outcome[T_inner, E_inner]
+
+    @property
+    def cast_types(self) -> _CastTypesOutcome[T_inner, E_inner]:
+        """Zero-runtime-cost type hint override for strict variance edge cases.
+
+        This allows manually guiding the type checker when it fails to infer
+        complex union types correctly.
+
+        Example:
+            >>> res = Outcome(10, None).unsafe.cast_types[int, str]()
+
+        """
+        return _CastTypesOutcome(self._owner)

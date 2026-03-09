@@ -52,7 +52,8 @@ markdown_extensions:
       alternate_style: true
 
 plugins:
-  - search
+  - search:
+      separator: '[\s\-\.]+' # Tells the search engine to split on spaces, hyphens, AND dots!
   - mkdocstrings:
       default_handler: python
       handlers:

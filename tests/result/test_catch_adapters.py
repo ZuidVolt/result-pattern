@@ -82,8 +82,8 @@ def test_catch_instance_sync() -> None:
 
     assert safe.sync_ok(42) == Ok(42)
     res: Any = safe.sync_fail()
-    assert is_err(res)  # ty: ignore[invalid-argument-type]
-    err: Any = res.err()  # ty: ignore[unresolved-attribute]
+    assert is_err(res)  # ty:ignore[invalid-argument-type]
+    err: Any = res.err()  # ty:ignore[unresolved-attribute]
     assert isinstance(err, ValueError)
     assert str(err) == "sync fail"
 
@@ -98,8 +98,8 @@ async def test_catch_instance_async() -> None:
 
     assert await safe.async_ok(100) == Ok(100)
     res: Any = await safe.async_fail()
-    assert is_err(res)  # ty: ignore[invalid-argument-type]
-    err: Any = res.err()  # ty: ignore[unresolved-attribute]
+    assert is_err(res)  # ty:ignore[invalid-argument-type]
+    err: Any = res.err()  # ty:ignore[unresolved-attribute]
     assert isinstance(err, ValueError)
     assert str(err) == "async fail"
 

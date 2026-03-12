@@ -1,3 +1,11 @@
+from .adapters import (
+    SafeStream,
+    SafeStreamAsync,
+    catch_boundary,
+    catch_each_iter,
+    catch_each_iter_async,
+    catch_instance,
+)
 from .combinators import (
     add_context,
     ensure,
@@ -15,17 +23,6 @@ from .combinators import (
     validate,
     validate_async,
 )
-from .future import (
-    SafeStream,
-    SafeStreamAsync,
-    assert_ok,
-    catch_boundary,
-    catch_each_iter,
-    catch_each_iter_async,
-    catch_instance,
-    retry_result,
-    retry_result_async,
-)
 from .outcome import Outcome, as_outcome, catch_outcome
 from .result import (
     CatchContext,
@@ -38,6 +35,7 @@ from .result import (
     UnwrapError,
     any_ok,
     as_err,
+    assert_ok,
     catch,
     catch_call,
     combine,
@@ -50,6 +48,8 @@ from .result import (
     is_ok,
     map2,
     partition,
+    retry_result,
+    retry_result_async,
 )
 
 __all__ = [

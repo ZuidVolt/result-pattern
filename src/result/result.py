@@ -45,13 +45,20 @@ that failure paths are handled as diligently as success paths.
 from __future__ import annotations
 
 import inspect
-from collections.abc import AsyncGenerator, Generator, Mapping
+from collections.abc import (
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Generator,
+    Iterable,
+    Mapping,
+)
 from dataclasses import dataclass, field
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Final, Literal, Never, TypeIs, TypeVar, Union, cast, overload
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Coroutine, Iterable
     from types import TracebackType
     from typing import ParamSpec, Protocol
 

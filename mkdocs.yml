@@ -78,4 +78,4 @@ nav:
       - Result: api/result.md
       - Outcome: api/outcome.md
       - Combinators: api/combinators.md
-      - Future: api/adapters.md
+      - Adapters: api/adapters.md

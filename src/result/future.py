@@ -11,7 +11,7 @@ Note:
 """
 
 # pyright: reportPrivateUsage=false
-# mypy: disable-error-code="no-any-return"
+# mypy: disable-error-code="no-any-return, redundant-cast"
 
 from __future__ import annotations
 
@@ -19,12 +19,15 @@ import inspect
 import sys
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator, Mapping
 from functools import wraps
-from typing import TYPE_CHECKING, Any, cast, overload
+from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 
-from .result import Err, Ok, OkErr, Result, _resolve_mapping, combine, partition
+from .result import Err, Ok, OkErr, Result, _resolve_mapping, catch, combine, partition
 
 if TYPE_CHECKING:
     from .outcome import Outcome
+
+T_cls = TypeVar("T_cls", bound=type[Any])
+T_obj = TypeVar("T_obj")
 
 
 def _raise_assertion_error(message: str) -> Any:
@@ -185,11 +188,25 @@ def catch_each_iter_async[T_local, E_local: Exception, **P_local](
     return cast("Any", decorator)
 
 
+@overload
 def catch_boundary(
-    exceptions: type[Exception] | tuple[type[Exception], ...] | Mapping[type[Exception], Any],
+    exceptions: type[Exception] | tuple[type[Exception], ...],
     *,
     map_to: Any = None,
-) -> Callable[[type[Any]], type[Any]]:
+) -> Callable[[T_cls], T_cls]: ...
+
+
+@overload
+def catch_boundary(
+    exceptions: Mapping[type[Exception], Any],
+) -> Callable[[T_cls], T_cls]: ...
+
+
+def catch_boundary(
+    exceptions: Any,
+    *,
+    map_to: Any = None,
+) -> Any:
     """Wrap all public methods of a class with the @catch decorator.
 
     This is an 'Entry Adapter' that allows lifting an entire external SDK or
@@ -202,26 +219,32 @@ def catch_boundary(
     Returns:
         A class decorator.
 
+    Static Analysis Note (Type Erasure):
+        Using this decorator causes **Type Erasure**. Most Python type checkers
+        (Mypy, Pyright) cannot currently track that the return types of all
+        methods have been transformed from `T` to `Result[T, E]`.
+        - Your IDE may still show the original return types.
+        - You may need to use `Any` or explicit type stubs when calling
+          decorated methods to avoid false-positive type errors.
+
     Examples:
         >>> @catch_boundary(ValueError, map_to="domain_error")
         ... class Client:
         ...     def perform(self, x):
-        ...         if x < 0: raise ValueError
+        ...         if x < 0:
+        ...             raise ValueError
         ...         return x
         >>> Client().perform(-1)
         Err('domain_error')
 
     """
-    from .result import catch
 
-    exc_map = _resolve_mapping(exceptions, map_to)
-
-    def decorator(cls: type[Any]) -> type[Any]:
+    def decorator(cls: T_cls) -> T_cls:
         for name, method in inspect.getmembers(cls, predicate=inspect.isroutine):
             if name.startswith("_"):
                 continue
-            # Wrap the method with @catch using the pre-resolved mapping
-            setattr(cls, name, catch(exc_map)(method))
+            # Wrap the method with @catch using original parameters
+            setattr(cls, name, catch(exceptions, map_to=map_to)(method))
         return cls
 
     return decorator
@@ -230,23 +253,31 @@ def catch_boundary(
 class _CatchInstanceProxy:
     """Internal proxy that wraps all method calls of an instance with @catch."""
 
-    def __init__(self, obj: Any, exc_map: dict[type[Exception], Any]) -> None:
+    def __init__(
+        self,
+        obj: Any,
+        exceptions: type[Exception] | tuple[type[Exception], ...] | Mapping[type[Exception], Any],
+        map_to: Any = None,
+    ) -> None:
         # Use object.__setattr__ to avoid infinite recursion with __getattr__
         object.__setattr__(self, "_obj", obj)
-        object.__setattr__(self, "_exc_map", exc_map)
+        object.__setattr__(self, "_exceptions", exceptions)
+        object.__setattr__(self, "_map_to", map_to)
 
     def __getattr__(self, name: str) -> Any:
-        from .result import catch
-
         obj = object.__getattribute__(self, "_obj")
         attr = getattr(obj, name)
-        exc_map = object.__getattribute__(self, "_exc_map")
+        exceptions = object.__getattribute__(self, "_exceptions")
+        map_to = object.__getattribute__(self, "_map_to")
+
+        if name.startswith("_"):
+            return attr
 
         if inspect.isroutine(attr):
             # Bind the routine to the original object to ensure 'self' is passed
             # This is important for instance methods
-            bound_method = attr.__get__(obj, obj.__class__)
-            return catch(exc_map)(bound_method)
+            bound_method = attr.__get__(obj, obj.__class__) if hasattr(attr, "__get__") else attr  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType, reportAttributeAccessIssue]
+            return catch(exceptions, map_to=map_to)(bound_method)  # pyright: ignore[reportUnknownArgumentType]
         return attr
 
     def __repr__(self) -> str:
@@ -254,12 +285,28 @@ class _CatchInstanceProxy:
         return f"catch_instance({obj!r})"
 
 
+@overload
 def catch_instance[T_obj](
     obj: T_obj,
-    exceptions: type[Exception] | tuple[type[Exception], ...] | Mapping[type[Exception], Any],
+    exceptions: type[Exception] | tuple[type[Exception], ...],
     *,
     map_to: Any = None,
-) -> T_obj:
+) -> T_obj: ...
+
+
+@overload
+def catch_instance[T_obj](
+    obj: T_obj,
+    exceptions: Mapping[type[Exception], Any],
+) -> T_obj: ...
+
+
+def catch_instance(
+    obj: Any,
+    exceptions: Any,
+    *,
+    map_to: Any = None,
+) -> Any:
     """Wrap a specific object instance so all method calls return Results.
 
     Ideal for third-party objects returned from factories that you don't
@@ -273,17 +320,24 @@ def catch_instance[T_obj](
     Returns:
         A proxy object that behaves like the original but wraps methods in @catch.
 
+    Static Analysis Note (Type Erasure):
+        Using this proxy causes **Type Erasure**. Most Python type checkers
+        will believe the returned object is of type `T_obj` (with original
+        return types), but at runtime every method will return a `Result`.
+        - You may need to cast the result to `Any` or use `# type: ignore`
+          when calling methods on the proxy to satisfy the type checker.
+
     Examples:
         >>> class Raw:
-        ...     def run(self): raise ValueError("fail")
+        ...     def run(self):
+        ...         raise ValueError("fail")
         >>> safe = catch_instance(Raw(), ValueError)
         >>> safe.run()
         Err(ValueError('fail'))
 
     """
-    exc_map = _resolve_mapping(exceptions, map_to)
     # Cast to T_obj so the type checker thinks it's the original type
-    return cast("T_obj", _CatchInstanceProxy(obj, exc_map))
+    return cast("Any", _CatchInstanceProxy(obj, exceptions, map_to))
 
 
 class AssertOk:

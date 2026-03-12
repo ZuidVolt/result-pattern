@@ -1,7 +1,13 @@
 """# Future: Experimental and Alpha features for Result Pattern.
 
 This module houses features that are currently in testing or alpha stage.
-API stability is not guaranteed.
+These features are designed to handle iteration-level errors and provide
+fault-tolerant streaming primitives.
+
+Note:
+    API stability is not guaranteed. These features may change or be removed
+    in future versions without a major version bump.
+
 """
 
 # pyright: reportPrivateUsage=false
@@ -25,6 +31,7 @@ def _wrap_gen_sync[T, E: Exception](
     *,
     has_mapping: bool,
 ) -> Iterator[Result[T, Any]]:
+    """Internal helper to wrap a synchronous iterator with exception handling."""
     try:
         for val in original_gen:
             yield Ok(val)
@@ -42,6 +49,7 @@ async def _wrap_gen_async[T, E: Exception](
     *,
     has_mapping: bool,
 ) -> AsyncIterator[Result[T, Any]]:
+    """Internal helper to wrap an asynchronous iterator with exception handling."""
     try:
         async for val in original_gen:
             yield Ok(val)
@@ -59,12 +67,50 @@ def catch_each_iter[T_local, E_local: Exception, **P_local](
 ) -> Callable[[Callable[P_local, Iterator[T_local]]], Callable[P_local, SafeStream[T_local, Any]]]:
     """Wrap a generator function to capture iteration-level exceptions into a SafeStream.
 
+    This decorator ensures that if an exception is raised during the iteration
+    of the generator, it is caught and yielded as an `Err` variant.
+
     Args:
-        exceptions: One or more exception types to catch during iteration.
-        map_to: Optional value to use as the error if an exception matches.
+        exceptions: One or more exception types to catch, or a mapping of
+            exception types to error values.
+        map_to: Optional constant value to use as the error if an exception
+            matches (only used if `exceptions` is not a mapping).
 
     Returns:
         A decorator that transforms Generator[T] -> SafeStream[T, E].
+
+    Examples:
+        >>> # 1. Simple catch (returns the caught instance)
+        >>> @catch_each_iter(ValueError)
+        ... def pump(n):
+        ...     for i in range(n):
+        ...         if i == 2:
+        ...             raise ValueError("fail")
+        ...         yield i
+        >>> list(pump(3))
+        [Ok(0), Ok(1), Err(ValueError('fail'))]
+
+        >>> # 2. Catch with map_to
+        >>> @catch_each_iter(ValueError, map_to="error")
+        ... def pump_mapped(n):
+        ...     for i in range(n):
+        ...         if i == 1:
+        ...             raise ValueError
+        ...         yield i
+        >>> list(pump_mapped(2))
+        [Ok(0), Err('error')]
+
+        >>> # 3. Catch multiple with mapping
+        >>> err_map = {ValueError: "val_err", TypeError: "type_err"}
+        >>> @catch_each_iter(err_map)
+        ... def pump_multi(x):
+        ...     if x == 0:
+        ...         raise ValueError
+        ...     if x == 1:
+        ...         raise TypeError
+        ...     yield "ok"
+        >>> list(pump_multi(0))
+        [Err('val_err')]
 
     """
     exc_map = _resolve_mapping(exceptions, map_to)  # type: ignore[arg-type]
@@ -78,7 +124,7 @@ def catch_each_iter[T_local, E_local: Exception, **P_local](
 
         return wrapper
 
-    return cast("Any", decorator)  # type: ignore[no-any-return]  # ty:ignore[unused-type-ignore-comment, unused-type-ignore-comment, unused-ignore-comment]
+    return cast("Any", decorator)  # type: ignore[no-any-return]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
 
 
 def catch_each_iter_async[T_local, E_local: Exception, **P_local](
@@ -88,12 +134,26 @@ def catch_each_iter_async[T_local, E_local: Exception, **P_local](
 ) -> Callable[[Callable[P_local, AsyncIterator[T_local]]], Callable[P_local, SafeStreamAsync[T_local, Any]]]:
     """Wrap an async generator function to capture iteration-level exceptions into a SafeStreamAsync.
 
+    This is the asynchronous version of `@catch_each_iter`.
+
     Args:
-        exceptions: One or more exception types to catch during iteration.
-        map_to: Optional value to use as the error if an exception matches.
+        exceptions: One or more exception types to catch, or a mapping of
+            exception types to error values.
+        map_to: Optional constant value to use as the error if an exception
+            matches (only used if `exceptions` is not a mapping).
 
     Returns:
         A decorator that transforms AsyncGenerator[T] -> SafeStreamAsync[T, E].
+
+    Examples:
+        >>> @catch_each_iter_async(ValueError)
+        ... async def async_pump(n):
+        ...     for i in range(n):
+        ...         if i == 1:
+        ...             raise ValueError("async fail")
+        ...         yield i
+        >>> [res async for res in async_pump(2)]
+        [Ok(0), Err(ValueError('async fail'))]
 
     """
     exc_map = _resolve_mapping(exceptions, map_to)  # type: ignore[arg-type]
@@ -107,7 +167,7 @@ def catch_each_iter_async[T_local, E_local: Exception, **P_local](
 
         return wrapper
 
-    return cast("Any", decorator)  # type: ignore[no-any-return]  # ty:ignore[unused-type-ignore-comment, unused-type-ignore-comment, unused-ignore-comment]
+    return cast("Any", decorator)  # type: ignore[no-any-return]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
 
 
 class SafeStream[T, E](Iterable["Result[T, E]"]):
@@ -119,14 +179,24 @@ class SafeStream[T, E](Iterable["Result[T, E]"]):
     Note:
         Like generators, a SafeStream can only be iterated once.
 
+    Attributes:
+        _gen: The internal iterator yielding Results.
+        _consumed: Whether the stream has already been iterated.
+
     """
 
     def __init__(self, gen: Iterator[Result[T, E]]) -> None:
+        """Initialize a SafeStream with a Result-yielding iterator."""
         self._gen = gen
         self._consumed = False
 
     def __iter__(self) -> Iterator[Result[T, E]]:
-        """Iterate over the stream. Raises RuntimeError if iterated more than once."""
+        """Iterate over the stream.
+
+        Raises:
+            RuntimeError: If the stream is iterated more than once.
+
+        """
         if self._consumed:
             msg = "SafeStream can only be iterated once"
             raise RuntimeError(msg)
@@ -142,6 +212,18 @@ class SafeStream[T, E](Iterable["Result[T, E]"]):
         Returns:
             The combined Result of the stream.
 
+        Examples:
+            >>> @catch_each_iter(ValueError)
+            ... def gen(fail):
+            ...     yield 1
+            ...     if fail:
+            ...         raise ValueError("fail")
+            ...     yield 2
+            >>> gen(fail=False).to_result()
+            Ok([1, 2])
+            >>> gen(fail=True).to_result()
+            Err(ValueError('fail'))
+
         """
         return combine(list(self))
 
@@ -152,6 +234,17 @@ class SafeStream[T, E](Iterable["Result[T, E]"]):
 
         Returns:
             An Outcome containing two lists: successes and errors.
+
+        Examples:
+            >>> @catch_each_iter(ValueError)
+            ... def gen():
+            ...     yield 1
+            ...     raise ValueError("err")
+            >>> out = gen().to_outcome()
+            >>> out.value
+            [1]
+            >>> out.error
+            [ValueError('err')]
 
         """
         oks, errs = partition(list(self))
@@ -169,11 +262,17 @@ class SafeStreamAsync[T, E](AsyncIterable["Result[T, E]"]):
     """Async version of SafeStream for fallible asynchronous generators."""
 
     def __init__(self, gen: AsyncIterator[Result[T, E]]) -> None:
+        """Initialize a SafeStreamAsync with a Result-yielding async iterator."""
         self._gen = gen
         self._consumed = False
 
     async def __aiter__(self) -> AsyncIterator[Result[T, E]]:
-        """Iterate over the async stream. Raises RuntimeError if iterated more than once."""
+        """Iterate over the async stream.
+
+        Raises:
+            RuntimeError: If the stream is iterated more than once.
+
+        """
         if self._consumed:
             msg = "SafeStreamAsync can only be iterated once"
             raise RuntimeError(msg)
@@ -182,12 +281,22 @@ class SafeStreamAsync[T, E](AsyncIterable["Result[T, E]"]):
             yield item
 
     async def to_result(self) -> Result[list[T], E]:
-        """Transpose the async stream into a single Result (All-or-Nothing)."""
+        """Transpose the async stream into a single Result (All-or-Nothing).
+
+        Returns:
+            The combined Result of all yielded items.
+
+        """
         items = [res async for res in self]
         return combine(items)
 
     async def to_outcome(self) -> Outcome[list[T], list[E]]:
-        """Transpose the async stream into a fault-tolerant Outcome (Partial Success)."""
+        """Transpose the async stream into a fault-tolerant Outcome (Partial Success).
+
+        Returns:
+            A master Outcome containing all success items and all errors.
+
+        """
         items = [res async for res in self]
         oks, errs = partition(items)
         try:

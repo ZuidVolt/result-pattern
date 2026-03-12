@@ -15,7 +15,7 @@ from .combinators import (
     validate,
     validate_async,
 )
-from .future import SafeStream, SafeStreamAsync, catch_each_iter, catch_each_iter_async
+from .future import SafeStream, SafeStreamAsync, assert_ok, catch_each_iter, catch_each_iter_async
 from .outcome import Outcome, as_outcome, catch_outcome
 from .result import (
     CatchContext,
@@ -58,6 +58,7 @@ __all__ = [
     "any_ok",
     "as_err",
     "as_outcome",
+    "assert_ok",
     "catch",
     "catch_call",
     "catch_each_iter",

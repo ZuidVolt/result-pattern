@@ -11,17 +11,29 @@ Note:
 """
 
 # pyright: reportPrivateUsage=false
+# mypy: disable-error-code="no-any-return"
 
 from __future__ import annotations
 
+import sys
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator, Mapping
 from functools import wraps
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, overload
 
-from .result import Err, Ok, Result, _resolve_mapping, combine, partition
+from .result import Err, Ok, OkErr, Result, _resolve_mapping, combine, partition
 
 if TYPE_CHECKING:
     from .outcome import Outcome
+
+
+def _raise_assertion_error(message: str) -> Any:
+    """Internal helper to raise AssertionError and hide this frame from traceback."""
+    __tracebackhide__ = True
+    try:
+        raise AssertionError(message)  # noqa: TRY301
+    except AssertionError as e:
+        tb = e.__traceback__
+        raise e.with_traceback(tb.tb_next if tb else None) from None
 
 
 def _wrap_gen_sync[T, E: Exception](
@@ -120,11 +132,12 @@ def catch_each_iter[T_local, E_local: Exception, **P_local](
     def decorator(f: Callable[P_local, Iterator[T_local]]) -> Any:
         @wraps(f)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
+            __tracebackhide__ = True
             return SafeStream(_wrap_gen_sync(f(*args, **kwargs), catch_tuple, exc_map, has_mapping=has_mapping))
 
         return wrapper
 
-    return cast("Any", decorator)  # type: ignore[no-any-return]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
+    return cast("Any", decorator)
 
 
 def catch_each_iter_async[T_local, E_local: Exception, **P_local](
@@ -163,11 +176,136 @@ def catch_each_iter_async[T_local, E_local: Exception, **P_local](
     def decorator(f: Callable[P_local, AsyncIterator[T_local]]) -> Any:
         @wraps(f)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
+            __tracebackhide__ = True
             return SafeStreamAsync(_wrap_gen_async(f(*args, **kwargs), catch_tuple, exc_map, has_mapping=has_mapping))
 
         return wrapper
 
-    return cast("Any", decorator)  # type: ignore[no-any-return]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
+    return cast("Any", decorator)
+
+
+class AssertOk:
+    """A context manager for asserting that Results must be Ok.
+
+    It automatically monitors local variable assignments within the block.
+    If any local variable is assigned an `Err` variant, it raises an
+    `AssertionError` immediately (fail-fast).
+
+    Note:
+        The automatic scanning only works for the local scope where the
+        `with assert_ok()` block is defined.
+
+    """
+
+    def __init__(self, message: str = "Result was Err") -> None:
+        """Initialize the assert_ok context with a custom message."""
+        self.message = message
+        self._initial_locals: set[str] = set()
+        self._old_trace: Any = None
+        self._is_scanning: bool = False
+
+    def __enter__(self) -> AssertOk:
+        """Enter the assert_ok context and install the fail-fast tracer."""
+        # Capture current locals to avoid re-triggering on existing variables
+        frame = sys._getframe(1)  # noqa: SLF001
+        self._initial_locals = set(frame.f_locals.keys())
+
+        # Install trace function for fail-fast detection
+        self._old_trace = sys.gettrace()
+        sys.settrace(self._trace_callback)
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Exit the assert_ok context and uninstall the tracer."""
+        sys.settrace(self._old_trace)
+
+    def _trace_callback(self, frame: Any, event: str, _arg: Any) -> Any:
+        """Trace function that scans locals for Err variants after each line."""
+        __tracebackhide__ = True
+        # Prevent re-entrancy issues if scanning logic itself triggers tracer
+        if self._is_scanning:
+            return self._trace_callback
+
+        if event == "line":
+            self._is_scanning = True
+            try:
+                # Scan current local variables
+                for name, value in frame.f_locals.items():
+                    # Only check variables that were added during this block
+                    if name not in self._initial_locals:
+                        match value:
+                            case Err(error_val):  # pyright: ignore[reportUnknownVariableType]
+                                # Trigger the error
+                                error_str = cast("Any", error_val)
+                                _raise_assertion_error(f"{self.message}: {error_str}")
+                            case _:
+                                pass
+            finally:
+                self._is_scanning = False
+        return self._trace_callback
+
+    def check[T, E](self, result: Result[T, E]) -> T:
+        """Verify that a result is Ok within the context.
+
+        Args:
+            result: The Result to verify.
+
+        Returns:
+            The success value if Ok.
+
+        Raises:
+            AssertionError: If the result is an Err.
+
+        """
+        __tracebackhide__ = True
+        match result:
+            case Err(e):  # pyright: ignore[reportUnknownVariableType]
+                err_val = cast("Any", e)
+                return _raise_assertion_error(f"{self.message}: {err_val}")
+            case Ok(v):
+                return v
+
+
+@overload
+def assert_ok[T, E](result_or_message: Result[T, E]) -> T: ...
+
+
+@overload
+def assert_ok(result_or_message: str = "Result was Err") -> AssertOk: ...
+
+
+def assert_ok(result_or_message: Any = "Result was Err") -> Any:
+    """A dual-purpose utility for asserting that a Result must be Ok.
+
+    Can be used as a standalone function or as a context manager.
+    If a Result is an Err, it raises an AssertionError.
+
+    Examples:
+        >>> # 1. Functional usage
+        >>> val = assert_ok(Ok(10))
+        >>> # assert_ok(Err("fail")) # Raises AssertionError
+
+        >>> # 2. Automatic context manager usage (Fail-fast)
+        >>> with assert_ok("Critical operations"):
+        ...     res = Ok(1)  # Fine
+        ...     # res2 = Err("boom") # Raises AssertionError immediately
+
+        >>> # 3. Explicit check usage
+        >>> with assert_ok() as ctx:
+        ...     val = ctx.check(Ok(42))
+
+    """
+    __tracebackhide__ = True
+    if isinstance(result_or_message, OkErr):
+        match result_or_message:
+            case Err(e):  # pyright: ignore[reportUnknownVariableType]
+                err_msg = cast("Any", e)
+                return _raise_assertion_error(f"assert_ok failed: {err_msg}")
+            case Ok(v):  # pyright: ignore[reportUnknownVariableType]
+                return cast("Any", v)
+
+    msg = str(result_or_message) if isinstance(result_or_message, str) else "Result was Err"
+    return AssertOk(msg)
 
 
 class SafeStream[T, E](Iterable["Result[T, E]"]):

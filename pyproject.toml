@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "result-pattern"
-version = "0.1.4"
+version = "0.2.0"
 description = "Errors as Values for Modern Python (result type)"
 readme = "README.md"
 readme-content-type = "text/markdown"

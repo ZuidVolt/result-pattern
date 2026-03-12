@@ -280,17 +280,35 @@ def assert_ok(result_or_message: Any = "Result was Err") -> Any:
     Can be used as a standalone function or as a context manager.
     If a Result is an Err, it raises an AssertionError.
 
+    Functional Mode:
+        When passed a `Result`, it returns the success value or raises
+        `AssertionError` immediately. This is the high-performance way to
+        assert invariants.
+
+    Context Manager Mode:
+        When used as a context manager, it automatically monitors local variable
+        assignments within the block using `sys.settrace`. If any local variable
+        is assigned an `Err` variant, it raises an `AssertionError` (fail-fast).
+
+    Performance & Behavior Notes:
+        - **Overhead**: The context manager installs a trace function, which
+          introduces performance overhead compared to functional
+          usage. Use it for scripts and prototypes rather than hot loops.
+        - **Scanning Scope**: The automatic scanning only catches `Err` variants
+          that are **assigned to a variable** name in the local scope.
+          Unassigned return values will NOT be caught.
+
     Examples:
-        >>> # 1. Functional usage
+        >>> # 1. Functional usage (Low overhead)
         >>> val = assert_ok(Ok(10))
         >>> # assert_ok(Err("fail")) # Raises AssertionError
 
-        >>> # 2. Automatic context manager usage (Fail-fast)
+        >>> # 2. Automatic context manager usage (Higher overhead, Fail-fast)
         >>> with assert_ok("Critical operations"):
         ...     res = Ok(1)  # Fine
         ...     # res2 = Err("boom") # Raises AssertionError immediately
 
-        >>> # 3. Explicit check usage
+        >>> # 3. Explicit check usage (Lower overhead in context)
         >>> with assert_ok() as ctx:
         ...     val = ctx.check(Ok(42))
 

@@ -15,6 +15,7 @@ Note:
 
 from __future__ import annotations
 
+import inspect
 import sys
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator, Mapping
 from functools import wraps
@@ -182,6 +183,107 @@ def catch_each_iter_async[T_local, E_local: Exception, **P_local](
         return wrapper
 
     return cast("Any", decorator)
+
+
+def catch_boundary(
+    exceptions: type[Exception] | tuple[type[Exception], ...] | Mapping[type[Exception], Any],
+    *,
+    map_to: Any = None,
+) -> Callable[[type[Any]], type[Any]]:
+    """Wrap all public methods of a class with the @catch decorator.
+
+    This is an 'Entry Adapter' that allows lifting an entire external SDK or
+    client class into the Result world in a single declaration.
+
+    Args:
+        exceptions: The exceptions to catch on all methods.
+        map_to: Optional constant error value.
+
+    Returns:
+        A class decorator.
+
+    Examples:
+        >>> @catch_boundary(ValueError, map_to="domain_error")
+        ... class Client:
+        ...     def perform(self, x):
+        ...         if x < 0: raise ValueError
+        ...         return x
+        >>> Client().perform(-1)
+        Err('domain_error')
+
+    """
+    from .result import catch
+
+    exc_map = _resolve_mapping(exceptions, map_to)
+
+    def decorator(cls: type[Any]) -> type[Any]:
+        for name, method in inspect.getmembers(cls, predicate=inspect.isroutine):
+            if name.startswith("_"):
+                continue
+            # Wrap the method with @catch using the pre-resolved mapping
+            setattr(cls, name, catch(exc_map)(method))
+        return cls
+
+    return decorator
+
+
+class _CatchInstanceProxy:
+    """Internal proxy that wraps all method calls of an instance with @catch."""
+
+    def __init__(self, obj: Any, exc_map: dict[type[Exception], Any]) -> None:
+        # Use object.__setattr__ to avoid infinite recursion with __getattr__
+        object.__setattr__(self, "_obj", obj)
+        object.__setattr__(self, "_exc_map", exc_map)
+
+    def __getattr__(self, name: str) -> Any:
+        from .result import catch
+
+        obj = object.__getattribute__(self, "_obj")
+        attr = getattr(obj, name)
+        exc_map = object.__getattribute__(self, "_exc_map")
+
+        if inspect.isroutine(attr):
+            # Bind the routine to the original object to ensure 'self' is passed
+            # This is important for instance methods
+            bound_method = attr.__get__(obj, obj.__class__)
+            return catch(exc_map)(bound_method)
+        return attr
+
+    def __repr__(self) -> str:
+        obj = object.__getattribute__(self, "_obj")
+        return f"catch_instance({obj!r})"
+
+
+def catch_instance[T_obj](
+    obj: T_obj,
+    exceptions: type[Exception] | tuple[type[Exception], ...] | Mapping[type[Exception], Any],
+    *,
+    map_to: Any = None,
+) -> T_obj:
+    """Wrap a specific object instance so all method calls return Results.
+
+    Ideal for third-party objects returned from factories that you don't
+    control the class of.
+
+    Args:
+        obj: The instance to wrap.
+        exceptions: The exceptions to catch.
+        map_to: Optional constant error value.
+
+    Returns:
+        A proxy object that behaves like the original but wraps methods in @catch.
+
+    Examples:
+        >>> class Raw:
+        ...     def run(self): raise ValueError("fail")
+        >>> safe = catch_instance(Raw(), ValueError)
+        >>> safe.run()
+        Err(ValueError('fail'))
+
+    """
+    exc_map = _resolve_mapping(exceptions, map_to)
+    # Cast to T_obj so the type checker thinks it's the original type
+    return cast("T_obj", _CatchInstanceProxy(obj, exc_map))
 
 
 class AssertOk:

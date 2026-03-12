@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from result import Err, Ok, SafeStream, SafeStreamAsync, catch_iter, is_err
+from result import Err, Ok, SafeStream, SafeStreamAsync, catch_each_iter, catch_each_iter_async, is_err
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Generator
@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 def test_catch_iter_sync_success() -> None:
-    @catch_iter(ValueError)
+    @catch_each_iter(ValueError)
     def count(n: int) -> Generator[int, Any, Any]:
         yield from range(n)
 
@@ -25,7 +25,7 @@ def test_catch_iter_sync_failure() -> None:
     limit = 2
     expected_len = 3
 
-    @catch_iter(ValueError)
+    @catch_each_iter(ValueError)
     def count_fail(n: int) -> Generator[int, Any, Any]:
         for i in range(n):
             if i == limit:
@@ -42,7 +42,7 @@ def test_catch_iter_sync_failure() -> None:
 
 
 def test_safe_stream_to_result() -> None:
-    @catch_iter(ValueError)
+    @catch_each_iter(ValueError)
     def gen(*, fail: bool) -> Generator[int, Any, Any]:
         yield 1
         if fail:
@@ -61,7 +61,7 @@ def test_safe_stream_to_result() -> None:
 
 
 def test_safe_stream_to_outcome() -> None:
-    @catch_iter(ValueError)
+    @catch_each_iter(ValueError)
     def gen() -> Generator[int, Any, Any]:
         yield 1
         raise ValueError("fail")
@@ -71,12 +71,12 @@ def test_safe_stream_to_outcome() -> None:
     out = stream.to_outcome()
     assert out.value == [1]
     assert isinstance(out.error, list)
-    assert len(out.error) == 1
-    assert isinstance(out.error[0], ValueError)
+    assert len(out.error) == 1  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+    assert isinstance(out.error[0], ValueError)  # pyright: ignore[reportUnknownMemberType]
 
 
 def test_safe_stream_one_shot() -> None:
-    @catch_iter(ValueError)
+    @catch_each_iter(ValueError)
     def gen() -> Generator[int, Any, Any]:
         yield 1
 
@@ -91,7 +91,7 @@ def test_safe_stream_one_shot() -> None:
 
 @pytest.mark.asyncio
 async def test_catch_iter_async_success() -> None:
-    @catch_iter(ValueError)
+    @catch_each_iter_async(ValueError)
     async def count_async(n: int) -> AsyncGenerator[int, Any]:
         for i in range(n):
             await asyncio.sleep(0)
@@ -107,7 +107,7 @@ async def test_catch_iter_async_failure() -> None:
     limit = 1
     expected_len = 2
 
-    @catch_iter(ValueError)
+    @catch_each_iter_async(ValueError)
     async def count_fail_async(n: int) -> AsyncGenerator[int, Any]:
         for i in range(n):
             if i == limit:
@@ -125,7 +125,7 @@ async def test_catch_iter_async_failure() -> None:
 
 @pytest.mark.asyncio
 async def test_safe_stream_async_conversions() -> None:
-    @catch_iter(ValueError)
+    @catch_each_iter_async(ValueError)
     async def gen_async(*, fail: bool) -> AsyncGenerator[int, Any]:
         yield 1
         if fail:
@@ -146,14 +146,14 @@ async def test_safe_stream_async_conversions() -> None:
     out = await stream_out.to_outcome()
     assert out.value == [1]
     assert out.error is not None
-    assert len(out.error) == 1
+    assert len(out.error) == 1  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
 
 
 # --- Mapping Tests ---
 
 
 def test_catch_iter_mapping() -> None:
-    @catch_iter(ValueError, map_to="mapped_err")
+    @catch_each_iter(ValueError, map_to="mapped_err")
     def gen() -> Generator[int, Any, Any]:
         yield 1
         raise ValueError("original")

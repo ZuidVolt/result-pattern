@@ -59,7 +59,7 @@ from collections.abc import (
     Iterable,
     Mapping,
 )
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Final, Literal, Never, TypeIs, TypeVar, Union, cast, overload
 
@@ -681,7 +681,7 @@ class Ok[T_co]:
         """Combine two results into a result of a tuple (Zip).
 
         Args:
-            other: Another Result to zip with.
+            other: Another Result to zipping with.
 
         Returns:
             Ok((val1, val2)) if both are Ok, otherwise the first Err.
@@ -1413,6 +1413,8 @@ def catch[T, **P](
 def catch[T, **P](
     exceptions: Mapping[type[Exception], Any],
     func: Callable[P, Coroutine[Any, Any, T]],
+    *,
+    map_to: Any = None,
 ) -> Callable[P, Awaitable[Result[T, Any]]]: ...
 
 
@@ -2003,32 +2005,39 @@ def do_notation_async[T_local, E_local, **P](
         >>> @do_notation_async
         ... async def get_data(user_id):
         ...     user = yield await fetch_user(user_id)  # fetch_user returns Result
-        ...     yield Ok(user.name)
+        ...     data = yield await fetch_posts(user["id"])
+        ...     yield Ok(data)
+        >>> await get_data(1)
+        Ok([...])
 
     """
-
-    def decorator(func: Callable[P, DoAsync[T_local, E_local]]) -> Any:
-        return _make_async_wrapper(func, cast("Any", catch_final), remap)
-
     if callable(arg) and not isinstance(arg, type | tuple):
         return _make_async_wrapper(arg, None, remap)
-
     catch_final = catch or (arg if isinstance(arg, type | tuple) else None)  # pyright: ignore[reportUnknownVariableType]
+
+    def decorator(func: Callable[P, DoAsync[T_local, E_local]]) -> Callable[P, Coroutine[Any, Any, Result[Any, Any]]]:
+        return _make_async_wrapper(func, cast("Any", catch_final), remap)
+
     return decorator
 
 
-# --- Exceptions ---
+# --- Context and Error Classes ---
 
 
-@dataclass
 class CatchContext[T, E]:
-    """A context manager for localized exception trapping into a Result.
+    """A context manager for capturing exceptions and converting them to Results.
 
-    This is returned by calling `catch()` as a context manager.
+    Usage:
+        >>> with catch(ValueError) as ctx:
+        ...     ctx.set(int("123"))
+        >>> ctx.result
+        Ok(123)
+
     """
 
-    exceptions: type[E] | tuple[type[E], ...]
-    result: Result[T, E] | None = field(default=None, init=False)
+    def __init__(self, exceptions: tuple[type[Exception], ...]) -> None:
+        self.exceptions = exceptions
+        self.result: Result[T, E] | None = None
 
     def __enter__(self) -> CatchContext[T, E]:
         return self
@@ -2037,15 +2046,11 @@ class CatchContext[T, E]:
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        _exc_tb: TracebackType | None,
+        exc_tb: TracebackType | None,
     ) -> bool:
-        if exc_type is None:
-            return False
-
-        if issubclass(exc_type, self.exceptions):
+        if exc_type is not None and issubclass(exc_type, self.exceptions):
             self.result = Err(cast("E", exc_val))
             return True
-
         return False
 
     def set(self, value: T) -> None:
@@ -2054,31 +2059,20 @@ class CatchContext[T, E]:
 
 
 class UnwrapError(RuntimeError):
-    """Raised when unwrapping a Result variant that does not contain the expected value.
-
-    This exception signals a 'panic' state where the developer made an assumption
-    about the Result state that was incorrect at runtime.
+    """Exception raised when an unsafe unwrap operation fails.
 
     Attributes:
-        result: The original Result instance (Ok or Err) that caused the panic.
-            Allowing for post-mortem inspection of the failed state.
+        result: The Result instance that failed to unwrap.
 
     """
 
     def __init__(self, result: Result[Any, Any], message: str) -> None:
-        """Initialize the panic with context.
-
-        Args:
-            result: The instance that failed to unwrap.
-            message: Descriptive error message explaining why the unwrap failed.
-
-        """
-        self.result = result
         super().__init__(message)
+        self.result = result
 
 
 class _DoError(Exception):
-    """Internal exception for do-notation flow control."""
+    """Internal exception used to implement do-notation short-circuiting."""
 
     def __init__(self, err: Err[Any]) -> None:
         self.err = err
@@ -2089,6 +2083,8 @@ F_cast = TypeVar("F_cast")
 
 
 class _CastTypesResult[T_inner, E_inner]:
+    """Helper for subscriptable type casting on Results."""
+
     def __init__(self, owner: Result[T_inner, E_inner]) -> None:
         self._owner = owner
 
@@ -2096,106 +2092,83 @@ class _CastTypesResult[T_inner, E_inner]:
         return lambda: cast("Result[U_cast, F_cast]", self._owner)  # type: ignore[valid-type]  # ty:ignore[unused-type-ignore-comment, unused-ignore-comment]
 
 
-# --- Unsafe Proxies ---
+# --- Unsafe Operations Namespace ---
 
 
 @dataclass(frozen=True, slots=True)
 class _OkUnsafe[T_co]:
-    """Namespace for operations that may raise an exception on an Ok variant."""
+    """Namespace for operations on Ok variants that might panic."""
 
     _owner: Ok[T_co]
 
     def unwrap(self) -> T_co:
-        """Extract the contained value. Always succeeds on Ok.
+        """Extract the success value.
 
         Returns:
-            The contained success value.
+            The contained success value. Always succeeds on `Ok`.
 
         """
         return self._owner._value
 
     def unwrap_err(self) -> Never:
-        """Raise an UnwrapError because an Ok value does not contain an error.
+        """Extract the error state.
 
         Raises:
-            UnwrapError: Always raised with a descriptive message.
+            UnwrapError: Always raises on `Ok` instances.
 
         """
-        msg = f"Called unwrap_err on an Ok value: {self._owner._value!r}"
+        msg = f"Called .unsafe.unwrap_err() on an Ok variant: {self._owner!r}"
         raise UnwrapError(self._owner, msg)
 
     def expect(self, _msg: str) -> T_co:
-        """Extract the contained value, ignoring the custom message.
-
-        Always succeeds on `Ok` variants.
-
-        Args:
-            _msg: The custom panic message (ignored on success).
+        """Extract the success value with a custom panic message.
 
         Returns:
-            The contained success value.
-
-        """
-        return self._owner._value
-
-    def unwrap_or_raise(self, _e: type[Exception]) -> T_co:
-        """Extract the contained value, ignoring the exception type.
-
-        Always succeeds on `Ok` variants.
-
-        Args:
-            _e: The exception type to raise (ignored on success).
-
-        Returns:
-            The contained success value.
-
-        """
-        return self._owner._value
-
-    def unwrap_or_default(self) -> T_co:
-        """Extract the contained value.
-
-        Always succeeds on `Ok` variants.
-
-        Returns:
-            The contained success value.
+            The contained success value. Always succeeds on `Ok`.
 
         """
         return self._owner._value
 
     def expect_err(self, msg: str) -> Never:
-        """Raise an UnwrapError because an Ok value does not contain an error.
-
-        Args:
-            msg: The custom panic message.
+        """Extract the error state with a custom panic message.
 
         Raises:
-            UnwrapError: Always raised.
+            UnwrapError: Always raises on `Ok` instances with the custom message.
 
         """
-        msg_final = f"{msg}: {self._owner._value!r}"
-        raise UnwrapError(self._owner, msg_final)
+        raise UnwrapError(self._owner, msg)
+
+    def unwrap_or_raise(self, _e: type[Exception]) -> T_co:
+        """Extract the success value, ignoring the exception.
+
+        Returns:
+            The contained success value. Always succeeds on `Ok`.
+
+        """
+        return self._owner._value
 
     @property
     def cast_types(self) -> _CastTypesResult[T_co, Any]:
         """Zero-runtime-cost type hint override for strict variance edge cases.
 
-        This allows manually guiding the type checker when it fails to infer
-        complex union types correctly.
-
         Example:
-            >>> res = Ok(10).unsafe.cast_types[int, Exception]()
+            >>> res = Ok(10).unsafe.cast_types[float, str]()
 
         """
         return _CastTypesResult(self._owner)
 
-    def to_outcome(self) -> Outcome[T_co, None]:
-        """Downgrade a strict success into an Outcome.
+    def unwrap_or_default(self) -> T_co:
+        """Extract the value. Always succeeds on Ok.
 
-        Always returns a clean Outcome with no errors.
+        Note: This exists for interface parity with Err.
+        """
+        return self._owner._value
+
+    def to_outcome(self) -> Outcome[T_co, Any]:
+        """Upgrade a strict success into a fault-tolerant Outcome.
 
         Returns:
-            A clean Outcome containing the value.
+            A fault-tolerant Outcome containing the success value and no error.
 
         """
         try:
@@ -2210,92 +2183,73 @@ class _OkUnsafe[T_co]:
 
 @dataclass(frozen=True, slots=True)
 class _ErrUnsafe[E_co]:
-    """Namespace for operations that may raise an exception on an Err variant."""
+    """Namespace for operations on Err variants that might panic."""
 
     _owner: Err[E_co]
 
     def unwrap(self) -> Never:
-        """Raise an UnwrapError because an error cannot be unwrapped.
+        """Extract the success value.
 
         Raises:
-            UnwrapError: Always raised, containing the error state.
+            UnwrapError: Always raises on `Err` instances.
 
         """
-        msg = f"Called unwrap on an Err value: {self._owner._error!r}"
-        exc = UnwrapError(self._owner, msg)
+        msg = f"Called .unsafe.unwrap() on an Err variant: {self._owner!r}"
         if isinstance(self._owner._error, BaseException):
-            raise exc from self._owner._error
-        raise exc
+            raise UnwrapError(self._owner, msg) from self._owner._error
+        raise UnwrapError(self._owner, msg)
 
     def unwrap_err(self) -> E_co:
-        """Extract the contained error. Always succeeds on Err.
+        """Extract the error state.
 
         Returns:
-            The contained error state.
+            The contained error state. Always succeeds on `Err`.
 
         """
         return self._owner._error
 
     def expect(self, msg: str) -> Never:
-        """Raise an UnwrapError with a custom message.
-
-        Args:
-            msg: The custom message to prepend to the error state output.
+        """Extract the success value with a custom panic message.
 
         Raises:
-            UnwrapError: Always raised.
+            UnwrapError: Always raises on `Err` instances with the custom message.
 
         """
-        msg_final = f"{msg}: {self._owner._error!r}"
-        exc = UnwrapError(self._owner, msg_final)
         if isinstance(self._owner._error, BaseException):
-            raise exc from self._owner._error
-        raise exc
+            raise UnwrapError(self._owner, msg) from self._owner._error
+        raise UnwrapError(self._owner, msg)
+
+    def expect_err(self, _msg: str) -> E_co:
+        """Extract the error state with a custom panic message.
+
+        Returns:
+            The contained error state. Always succeeds on `Err`.
+
+        """
+        return self._owner._error
 
     def unwrap_or_raise(self, e: type[Exception]) -> Never:
-        """Raise a custom exception with the error state.
+        """Extract the success value or raise a specific exception.
 
         Args:
             e: The exception class to instantiate and raise.
 
         Raises:
-            Exception: An instance of `e` initialized with the error state.
+            Exception: Always raises an instance of `e` on `Err` variants.
 
         """
         raise e(self._owner._error)
 
     def unwrap_or_default(self) -> Any:
-        """Return the default value for the error's expected type if possible.
+        """Return None as a placeholder for the error's success value.
 
-        Since we don't have a Default trait, we try to infer from common types.
-        Otherwise, this returns None.
-
-        Returns:
-            A default value (0, "", [], etc.) or None.
-
+        Note: This is provided for interface parity with Ok.
         """
         return None
-
-    def expect_err(self, _msg: str) -> E_co:
-        """Extract the contained error, ignoring the custom message.
-
-        Always succeeds on `Err` variants.
-
-        Args:
-            _msg: The custom panic message (ignored on failure).
-
-        Returns:
-            The contained error state.
-
-        """
-        return self._owner._error
 
     @property
     def cast_types(self) -> _CastTypesResult[Any, E_co]:
         """Zero-runtime-cost type hint override for strict variance edge cases.
-
-        This allows manually guiding the type checker when it fails to infer
-        complex union types correctly.
 
         Example:
             >>> res = Err("fail").unsafe.cast_types[int, str]()
@@ -2323,6 +2277,40 @@ class _ErrUnsafe[E_co]:
             ) from None
 
         return Outcome(default, self._owner._error)
+
+
+# --- Internal teaching helper ---
+
+
+def _raise_api_error(method_name: str) -> Never:
+    """Raise a descriptive error to guide users to the correct API."""
+    match method_name:
+        case "value" | "error":
+            msg = (
+                f"Result API Warning: Direct access to '.{method_name}' is disabled to prevent unhandled errors. "
+                "Use pattern matching ('match res: case Ok(v): ...'), functional methods like '.map()', "
+                "or safe conversion methods like '.ok()' and '.err()'."
+            )
+        case "inspect" | "inspect_async" | "inspect_err":
+            target = method_name.replace("inspect", "tap")
+            msg = (
+                f"Result API Warning: '.{method_name}()' has been renamed to '.{target}()' to align with "
+                "modern functional naming conventions. Please update your code to use the new naming."
+            )
+        case "unwrap" | "unwrap_err" | "expect" | "expect_err" | "unwrap_or_raise":
+            msg = (
+                f"Result API Warning: '.{method_name}()' is a crashing operation and is isolated "
+                "in the '.unsafe' namespace to encourage safe functional patterns. "
+                f"Use '.unsafe.{method_name}()' if you specifically need to panic, or prefer "
+                "safe alternatives like '.unwrap_or()' or '.unwrap_or_else()'."
+            )
+        case _:
+            msg = f"Result API Warning: '.{method_name}()' is not part of the supported Result API."
+
+    raise AttributeError(msg)
+
+
+# --- Resilience & Assertion Utilities ---
 
 
 def _raise_assertion_error(message: str) -> Any:
@@ -2477,9 +2465,6 @@ def assert_ok(result_or_message: Any = "Result was Err") -> Any:
     return AssertOk(msg)
 
 
-_catch_decorator = catch
-
-
 def _get_retry_delay(
     current_delay: float,
     *,
@@ -2618,8 +2603,8 @@ def retry_result(
     """
 
     def decorator[T, E, **P](f: Callable[P, Result[T, E] | T]) -> Callable[P, Result[T, E]]:
-        # If catch is provided, we wrap the function in @catch first
-        wrapped_f = _catch_decorator(cast("Any", catch))(f) if catch else f
+        actual_catch = globals()["catch"]
+        wrapped_f = actual_catch(cast("Any", catch_val))(f) if (catch_val := catch) else f
 
         @wraps(f)
         def wrapper(*args: Any, **kwargs: Any) -> Result[T, E]:
@@ -2780,7 +2765,8 @@ def retry_result_async(
     ) -> Callable[P, Awaitable[Result[T, E]]]:
         # If catch is provided, we wrap the function in @catch first
         # We must ensure the resulting wrapper is awaited
-        wrapped_f = _catch_decorator(cast("Any", catch))(f) if catch else f
+        actual_catch = globals()["catch"]
+        wrapped_f = actual_catch(cast("Any", catch_val))(f) if (catch_val := catch) else f
 
         @wraps(f)
         async def wrapper(*args: Any, **kwargs: Any) -> Result[T, E]:
@@ -2812,34 +2798,3 @@ def retry_result_async(
         return cast("Any", wrapper)
 
     return cast("Any", decorator)
-
-
-# --- Internal Teaching Helper ---
-
-
-def _raise_api_error(method_name: str) -> Never:
-    """Raise a descriptive error to guide users to the correct API."""
-    match method_name:
-        case "value" | "error":
-            msg = (
-                f"Result API Warning: Direct access to '.{method_name}' is disabled to prevent unhandled errors. "
-                "Use pattern matching ('match res: case Ok(v): ...'), functional methods like '.map()', "
-                "or safe conversion methods like '.ok()' and '.err()'."
-            )
-        case "inspect" | "inspect_async" | "inspect_err":
-            target = method_name.replace("inspect", "tap")
-            msg = (
-                f"Result API Warning: '.{method_name}()' has been renamed to '.{target}()' to align with "
-                "modern functional naming conventions. Please update your code to use the new naming."
-            )
-        case "unwrap" | "unwrap_err" | "expect" | "expect_err" | "unwrap_or_raise":
-            msg = (
-                f"Result API Warning: '.{method_name}()' is a crashing operation and is isolated "
-                "in the '.unsafe' namespace to encourage safe functional patterns. "
-                f"Use '.unsafe.{method_name}()' if you specifically need to panic, or prefer "
-                "safe alternatives like '.unwrap_or()' or '.unwrap_or_else()'."
-            )
-        case _:
-            msg = f"Result API Warning: '.{method_name}()' is not part of the supported Result API."
-
-    raise AttributeError(msg)

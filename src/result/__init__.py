@@ -5,6 +5,9 @@ from .adapters import (
     catch_each_iter,
     catch_each_iter_async,
     catch_instance,
+    collecting,
+    safe_resource,
+    scoped_catch,
 )
 from .combinators import (
     add_context,
@@ -76,6 +79,7 @@ __all__ = [
     "catch_each_iter_async",
     "catch_instance",
     "catch_outcome",
+    "collecting",
     "combine",
     "do",
     "do_async",
@@ -95,6 +99,8 @@ __all__ = [
     "partition_results",
     "retry_result",
     "retry_result_async",
+    "safe_resource",
+    "scoped_catch",
     "succeeds",
     "traverse",
     "traverse_async",

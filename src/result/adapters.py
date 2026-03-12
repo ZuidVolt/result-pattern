@@ -260,6 +260,162 @@ def catch_instance(
     return cast("Any", _CatchInstanceProxy(obj, exceptions, map_to))
 
 
+class _SafeResourceContext[T]:
+    """Internal context manager for safe_resource."""
+
+    def __init__(self, cm: Any) -> None:
+        self.cm = cm
+        self.entered = False
+
+    def __enter__(self) -> Result[T, Exception]:
+        try:
+            val = self.cm.__enter__()
+            self.entered = True
+            return Ok(cast("T", val))
+        except Exception as e:  # noqa: BLE001
+            return Err(e)
+
+    def __exit__(self, et: Any, ev: Any, tb: Any) -> Any:
+        if self.entered:
+            return self.cm.__exit__(et, ev, tb)
+        return None
+
+
+def safe_resource[T](cm: Any) -> _SafeResourceContext[T]:
+    """Wrap a standard context manager so that failures in __enter__ yield an Err.
+
+    This ensures that the 'with' block is always entered, but the target
+    is a Result variant.
+
+    Args:
+        cm: A standard context manager (e.g., from open()).
+
+    Returns:
+        A context manager that yields Result[T, Exception].
+
+    Examples:
+        >>> with safe_resource(open("missing.txt")) as res:
+        ...     match res:
+        ...         case Ok(f):
+        ...             print(f.read())
+        ...         case Err(e):
+        ...             print(f"Error: {e}")
+
+    """
+    return _SafeResourceContext(cm)
+
+
+class Collector[E_acc]:
+    """Imperative error accumulator for non-short-circuiting logic."""
+
+    def __init__(self) -> None:
+        self._errors: list[E_acc] = []
+
+    def add[T](self, result: Result[T, E_acc]) -> T | None:
+        """Add a result to the collector.
+
+        Args:
+            result: The Result to add.
+
+        Returns:
+            The success value if Ok, otherwise None.
+
+        """
+        match result:
+            case Ok(v):
+                return v
+            case Err(e):
+                self._errors.append(e)
+                return None
+
+    @property
+    def ok(self) -> bool:
+        """Check if any errors were collected."""
+        return len(self._errors) == 0
+
+    @property
+    def errors(self) -> list[E_acc]:
+        """Return the list of all collected errors."""
+        return self._errors
+
+
+class _CollectingContext[E_acc]:
+    """Context manager for the collecting() utility."""
+
+    def __enter__(self) -> Collector[E_acc]:
+        return Collector[E_acc]()
+
+    def __exit__(self, _et: Any, _ev: Any, _tb: Any) -> None:
+        pass
+
+
+class _CollectingFactory:
+    """Factory for the collecting() utility supporting subscription."""
+
+    def __call__[E_acc](self) -> _CollectingContext[E_acc]:
+        return _CollectingContext[E_acc]()
+
+    def __getitem__(self, _types: Any) -> Any:
+        return _CollectingContext[Any]
+
+
+collecting = _CollectingFactory()
+"""Utility for collecting errors from multiple exception handlers.
+
+Examples:
+    >>> with collecting() as col:
+    ...     name = col.add(parse_name(raw_name))  # Returns value if Ok, else None
+    ...     age = col.add(parse_age(raw_age))
+    ...     email = col.add(parse_email(raw_email))
+    ...
+    ... if col.ok:
+    ...     return Ok(User(name, age, email))
+    ... return Err(col.errors)  # List of all failures
+"""
+
+
+class ScopedCatch[T, E]:
+    """Multi-exception type routing context manager."""
+
+    def __init__(self) -> None:
+        self._handlers: dict[type[Exception], Any] = {}
+        self.result: Result[T, E] | None = None
+
+    def on[E_new](self, exc_type: type[Exception], map_to: E_new) -> None:  # pyright: ignore[reportInvalidTypeVarUse]
+        """Register a mapping for a specific exception type."""
+        self._handlers[exc_type] = map_to
+
+    def set(self, value: T) -> None:
+        """Set the success result for the scope."""
+        self.result = Ok(value)
+
+    def __enter__(self) -> ScopedCatch[T, E]:
+        return self
+
+    def __exit__(self, et: type[Exception] | None, ev: Exception | None, _tb: Any) -> bool:
+        if et is None:
+            return False
+
+        for exc_type, mapped in self._handlers.items():
+            if issubclass(et, exc_type):
+                self.result = Err(cast("E", mapped))
+                return True
+        return False
+
+
+class _ScopedCatchFactory:
+    """Factory for the scoped_catch() utility supporting subscription."""
+
+    def __call__[T, E](self) -> ScopedCatch[T, E]:
+        return ScopedCatch[T, E]()
+
+    def __getitem__(self, _types: Any) -> Any:
+        return ScopedCatch[Any, Any]
+
+
+scoped_catch = _ScopedCatchFactory()
+
+
 class SafeStream[T, E](Iterable["Result[T, E]"]):
     """A wrapper around a fallible generator that provides functional transposition.
 

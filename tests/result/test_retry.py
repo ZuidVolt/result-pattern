@@ -20,7 +20,7 @@ def test_retry_sync_success() -> None:
             return Err("fail")
         return Ok(42)
 
-    res: Result[int, str] = op()
+    res: Result[Any, Any] = op()
     assert res == Ok(42)
     expected_total_calls = 2
     assert calls == expected_total_calls
@@ -110,7 +110,7 @@ def test_retry_plus_catch_stacking() -> None:
             raise ValueError("fail")
         return 42
 
-    res = op()
+    res: Result[Any, Any] = op()
     assert res == Ok(42)
     expected_total_calls = 2
     assert calls == expected_total_calls
@@ -132,7 +132,7 @@ async def test_retry_async_success() -> None:
             return Err("transient")
         return Ok(100)
 
-    res: Result[int, str] = await op()  # pyright: ignore[reportUnknownVariableType]
+    res: Result[Any, Any] = await op()  # pyright: ignore[reportUnknownVariableType]
     assert res == Ok(100)
     assert calls == attempts
 

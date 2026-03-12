@@ -641,7 +641,7 @@ wheels = [
 
 [[package]]
 name = "result-pattern"
-version = "0.1.4"
+version = "0.2.1"
 source = { editable = "." }
 
 [package.dev-dependencies]

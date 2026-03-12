@@ -15,13 +15,17 @@ Note:
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import random
 import sys
-from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator, Mapping
+import time
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
 from functools import wraps
 from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 
 from .result import Err, Ok, OkErr, Result, _resolve_mapping, catch, combine, partition
+from .result import catch as _catch_decorator
 
 if TYPE_CHECKING:
     from .outcome import Outcome
@@ -188,25 +192,11 @@ def catch_each_iter_async[T_local, E_local: Exception, **P_local](
     return cast("Any", decorator)
 
 
-@overload
 def catch_boundary(
-    exceptions: type[Exception] | tuple[type[Exception], ...],
+    exceptions: type[Exception] | tuple[type[Exception], ...] | Mapping[type[Exception], Any],
     *,
     map_to: Any = None,
-) -> Callable[[T_cls], T_cls]: ...
-
-
-@overload
-def catch_boundary(
-    exceptions: Mapping[type[Exception], Any],
-) -> Callable[[T_cls], T_cls]: ...
-
-
-def catch_boundary(
-    exceptions: Any,
-    *,
-    map_to: Any = None,
-) -> Any:
+) -> Callable[[T_cls], T_cls]:
     """Wrap all public methods of a class with the @catch decorator.
 
     This is an 'Entry Adapter' that allows lifting an entire external SDK or
@@ -244,7 +234,8 @@ def catch_boundary(
             if name.startswith("_"):
                 continue
             # Wrap the method with @catch using original parameters
-            setattr(cls, name, catch(exceptions, map_to=map_to)(method))
+            # Use Any to satisfy ty's overload resolution
+            setattr(cls, name, catch(cast("Any", exceptions), map_to=map_to)(method))
         return cls
 
     return decorator
@@ -336,7 +327,7 @@ def catch_instance(
         Err(ValueError('fail'))
 
     """
-    # Cast to T_obj so the type checker thinks it's the original type
+    # Cast to Any so the type checker thinks it's the original type
     return cast("Any", _CatchInstanceProxy(obj, exceptions, map_to))
 
 
@@ -619,3 +610,337 @@ class SafeStreamAsync[T, E](AsyncIterable["Result[T, E]"]):
             ) from None
 
         return Outcome(oks, errs or None)
+
+
+def _get_retry_delay(
+    current_delay: float,
+    *,
+    jitter: bool | float,
+) -> float:
+    """Internal helper to calculate next retry delay."""
+    if current_delay <= 0:
+        return 0
+    sleep_time = current_delay
+    if jitter:
+        # If jitter is True, default to 0.1, else use the provided float value
+        jitter_val = jitter if isinstance(jitter, float) else 0.1
+        sleep_time += random.uniform(0, jitter_val)
+    return sleep_time
+
+
+@overload
+def retry_result[T, E, **P](
+    attempts: int = 3,
+    delay: float = 0,
+    backoff: float = 1.0,
+    *,
+    jitter: bool | float = False,
+    retry_if: Callable[[E], bool],
+    catch: None = None,
+) -> Callable[[Callable[P, Result[T, E]]], Callable[P, Result[T, E]]]: ...
+
+
+@overload
+def retry_result[T, E, **P](
+    attempts: int = 3,
+    delay: float = 0,
+    backoff: float = 1.0,
+    *,
+    jitter: bool | float = False,
+    retry_if: None = None,
+    catch: None = None,
+) -> Callable[[Callable[P, Result[T, E]]], Callable[P, Result[T, E]]]: ...
+
+
+@overload
+def retry_result[T, E_exc: Exception, **P](
+    attempts: int = 3,
+    delay: float = 0,
+    backoff: float = 1.0,
+    *,
+    jitter: bool | float = False,
+    retry_if: Callable[[E_exc], bool] | None = None,
+    catch: type[E_exc],
+) -> Callable[[Callable[P, T]], Callable[P, Result[T, E_exc]]]: ...
+
+
+@overload
+def retry_result[T, **P](
+    attempts: int = 3,
+    delay: float = 0,
+    backoff: float = 1.0,
+    *,
+    jitter: bool | float = False,
+    catch: tuple[type[Exception], ...] | Mapping[type[Exception], Any],
+) -> Callable[[Callable[P, T | Result[T, Any]]], Callable[P, Result[T, Any]]]: ...
+
+
+def retry_result(
+    attempts: int = 3,
+    delay: float = 0,
+    backoff: float = 1.0,
+    *,
+    jitter: bool | float = False,
+    retry_if: Callable[[Any], bool] | None = None,
+    catch: type[Exception] | tuple[type[Exception], ...] | Mapping[type[Exception], Any] | None = None,
+) -> Any:
+    """A resilience decorator for synchronous functions that return a `Result`.
+
+    It will automatically re-execute the function if it returns an `Err` variant,
+    up to the specified number of `attempts`.
+
+    If `catch` is provided, it will also catch specified exceptions and turn
+    them into `Err` variants before deciding whether to retry.
+
+    Args:
+        attempts: Total number of attempts to try (default 3).
+        delay: Initial delay in seconds between retries (default 0).
+        backoff: Multiplier for the delay after each attempt (default 1.0).
+        jitter: If True (or a float), add randomness to the delay.
+        retry_if: Optional predicate to decide if an error should be retried.
+        catch: Optional exception types to catch and lift into Results.
+
+    Returns:
+        A decorator that adds retry logic to the function.
+
+    Notes & Footguns:
+        - **Idempotency**: Retrying functions with side effects (e.g., DB writes)
+          can be dangerous if the operation is not idempotent.
+        - **Exception Scoping**: If `catch` is NOT used, and the function raises
+          an exception, the retry logic will NOT trigger (the exception will
+          bubble up). The retry logic only reacts to `Err` return values.
+        - **Wait Times**: High `attempts` and `backoff` values can lead to
+          extremely long execution times.
+
+    Examples:
+        >>> # 1. Basic Retry (Reacts to Err return)
+        >>> @retry_result(attempts=3)
+        ... def unstable():
+        ...     return Err("fail")
+        >>> unstable()
+        Err('fail')  # Tried 3 times
+
+        >>> # 2. Exponential Backoff with Jitter
+        >>> @retry_result(attempts=5, delay=0.1, backoff=2.0, jitter=True)
+        ... def network_call():
+        ...     return Err("timeout")
+
+        >>> # 3. Conditional Retry (only retry on transient errors)
+        >>> @retry_result(attempts=3, retry_if=lambda e: e == "temporary")
+        ... def db_op():
+        ...     return Err("permanent")
+        >>> db_op()
+        Err('permanent')  # Fails fast, only tried once
+
+        >>> # 4. Internal Exception Catching (Lifting)
+        >>> @retry_result(attempts=3, catch=ValueError)
+        ... def parse_stuff(s):
+        ...     return int(s)  # Raises ValueError -> Err -> Retry
+        >>> parse_stuff("abc")
+        Err(ValueError("invalid literal for int()..."))
+
+        >>> # 5. Stacking with @catch
+        >>> @retry_result(attempts=2)
+        ... @catch(KeyError)
+        ... def get_config():
+        ...     raise KeyError("missing")
+        >>> get_config()
+        Err(KeyError('missing'))  # @catch fires first, then @retry sees Err
+
+    """
+
+    def decorator[T, E, **P](f: Callable[P, Result[T, E] | T]) -> Callable[P, Result[T, E]]:
+        # If catch is provided, we wrap the function in @catch first
+        wrapped_f = _catch_decorator(cast("Any", catch))(f) if catch else f
+
+        @wraps(f)
+        def wrapper(*args: Any, **kwargs: Any) -> Result[T, E]:
+            current_delay = delay
+            # Initialize with dummy error, will be overwritten in loop
+            res: Any = Err(cast("E", "retry loop didn't run"))  # pyright: ignore[reportUnknownVariableType]
+            for i in range(attempts):
+                # Call the (potentially catch-wrapped) function
+                res = wrapped_f(*args, **kwargs)
+
+                # If it's not a Result (e.g. catch wasn't used and func returns T),
+                # we wrap it in Ok automatically.
+                if not isinstance(res, OkErr):
+                    res = Ok(res)
+
+                if isinstance(res, Ok):
+                    return res  # pyright: ignore[reportUnknownVariableType]
+
+                # It's an Err, check if we should retry
+                err_val = res.err()  # pyright: ignore[reportUnknownVariableType]
+                if retry_if and not retry_if(err_val):
+                    return res  # pyright: ignore[reportUnknownVariableType]
+
+                # Final attempt failed
+                if i == attempts - 1:
+                    return res  # pyright: ignore[reportUnknownVariableType]
+
+                # Sleep and backoff
+                sleep_time = _get_retry_delay(current_delay, jitter=jitter)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+
+                current_delay *= backoff
+            return res  # pyright: ignore[reportUnknownVariableType]
+
+        return cast("Any", wrapper)
+
+    return cast("Any", decorator)
+
+
+@overload
+def retry_result_async[T, E, **P](
+    attempts: int = 3,
+    delay: float = 0,
+    backoff: float = 1.0,
+    *,
+    jitter: bool | float = False,
+    retry_if: Callable[[E], bool],
+    catch: None = None,
+) -> Callable[[Callable[P, Awaitable[Result[T, E]]]], Callable[P, Awaitable[Result[T, E]]]]: ...
+
+
+@overload
+def retry_result_async[T, E, **P](
+    attempts: int = 3,
+    delay: float = 0,
+    backoff: float = 1.0,
+    *,
+    jitter: bool | float = False,
+    retry_if: None = None,
+    catch: None = None,
+) -> Callable[[Callable[P, Awaitable[Result[T, E]]]], Callable[P, Awaitable[Result[T, E]]]]: ...
+
+
+@overload
+def retry_result_async[T, E_exc: Exception, **P](
+    attempts: int = 3,
+    delay: float = 0,
+    backoff: float = 1.0,
+    *,
+    jitter: bool | float = False,
+    retry_if: Callable[[E_exc], bool] | None = None,
+    catch: type[E_exc],
+) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[Result[T, E_exc]]]]: ...
+
+
+@overload
+def retry_result_async[T, **P](
+    attempts: int = 3,
+    delay: float = 0,
+    backoff: float = 1.0,
+    *,
+    jitter: bool | float = False,
+    catch: tuple[type[Exception], ...] | Mapping[type[Exception], Any],
+) -> Callable[[Callable[P, Awaitable[T] | Awaitable[Result[T, Any]]]], Callable[P, Awaitable[Result[T, Any]]]]: ...
+
+
+def retry_result_async(
+    attempts: int = 3,
+    delay: float = 0,
+    backoff: float = 1.0,
+    *,
+    jitter: bool | float = False,
+    retry_if: Callable[[Any], bool] | None = None,
+    catch: type[Exception] | tuple[type[Exception], ...] | Mapping[type[Exception], Any] | None = None,
+) -> Any:
+    """A resilience decorator for asynchronous functions that return a `Result`.
+
+    This is the asynchronous version of `retry_result`.
+
+    It will automatically re-execute the function if it returns an `Err` variant,
+    up to the specified number of `attempts`.
+
+    If `catch` is provided, it will also catch specified exceptions and turn
+    them into `Err` variants before deciding whether to retry.
+
+    Args:
+        attempts: Total number of attempts to try (default 3).
+        delay: Initial delay in seconds between retries (default 0).
+        backoff: Multiplier for the delay after each attempt (default 1.0).
+        jitter: If True (or a float), add randomness to the delay.
+        retry_if: Optional predicate to decide if an error should be retried.
+        catch: Optional exception types to catch and lift into Results.
+
+    Returns:
+        A decorator that adds retry logic to the async function.
+
+    Notes & Footguns:
+        - **Idempotency**: Retrying functions with side effects (e.g., POST calls)
+          can be dangerous if the operation is not idempotent.
+        - **Exception Scoping**: If `catch` is NOT used, and the function raises
+          an exception, the retry logic will NOT trigger (the exception will
+          bubble up).
+        - **Concurrency**: This decorator retries in series. For parallel
+          retries, consider other orchestration patterns.
+
+    Examples:
+        >>> # 1. Async Basic Retry
+        >>> @retry_result_async(attempts=3)
+        ... async def unstable():
+        ...     return Err("fail")
+        >>> await unstable()
+        Err('fail')
+
+        >>> # 2. Async Backoff with Jitter
+        >>> @retry_result_async(attempts=5, delay=0.1, backoff=2.0, jitter=0.5)
+        ... async def fetch_data():
+        ...     return Err("timeout")
+
+        >>> # 3. Async Conditional Retry
+        >>> @retry_result_async(attempts=3, retry_if=lambda e: e.status == 429)
+        ... async def api_call():
+        ...     return Err(Response(status=500))
+        >>> await api_call()
+        Err(Response(status=500))  # Fails fast, not a 429
+
+        >>> # 4. Async Internal Exception Catching
+        >>> @retry_result_async(attempts=3, catch=asyncio.TimeoutError)
+        ... async def timed_op():
+        ...     raise asyncio.TimeoutError
+        >>> await timed_op()
+        Err(asyncio.TimeoutError())
+
+    """
+
+    def decorator[T, E, **P](
+        f: Callable[P, Awaitable[Result[T, E]] | Awaitable[T]],
+    ) -> Callable[P, Awaitable[Result[T, E]]]:
+        # If catch is provided, we wrap the function in @catch first
+        # We must ensure the resulting wrapper is awaited
+        wrapped_f = _catch_decorator(cast("Any", catch))(f) if catch else f
+
+        @wraps(f)
+        async def wrapper(*args: Any, **kwargs: Any) -> Result[T, E]:
+            current_delay = delay
+            res: Any = Err(cast("E", "retry loop didn't run"))  # pyright: ignore[reportUnknownVariableType]
+            for i in range(attempts):
+                res = await wrapped_f(*args, **kwargs)  # pyright: ignore[reportUnknownVariableType, reportGeneralTypeIssues]
+
+                if not isinstance(res, OkErr):
+                    res = Ok(res)  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+
+                if isinstance(res, Ok):
+                    return res  # pyright: ignore[reportUnknownVariableType, reportUnknownVariableType]
+
+                err_val = res.err()  # pyright: ignore[reportUnknownVariableType]
+                if retry_if and not retry_if(err_val):
+                    return res  # pyright: ignore[reportUnknownVariableType]
+
+                if i == attempts - 1:
+                    return res  # pyright: ignore[reportUnknownVariableType]
+
+                sleep_time = _get_retry_delay(current_delay, jitter=jitter)
+                if sleep_time > 0:
+                    await asyncio.sleep(sleep_time)
+
+                current_delay *= backoff
+            return res  # pyright: ignore[reportUnknownVariableType]
+
+        return cast("Any", wrapper)
+
+    return cast("Any", decorator)

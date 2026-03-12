@@ -23,6 +23,8 @@ from .future import (
     catch_each_iter,
     catch_each_iter_async,
     catch_instance,
+    retry_result,
+    retry_result_async,
 )
 from .outcome import Outcome, as_outcome, catch_outcome
 from .result import (
@@ -91,6 +93,8 @@ __all__ = [
     "partition_exceptions",
     "partition_map",
     "partition_results",
+    "retry_result",
+    "retry_result_async",
     "succeeds",
     "traverse",
     "traverse_async",

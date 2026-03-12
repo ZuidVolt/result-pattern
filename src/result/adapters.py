@@ -209,7 +209,7 @@ class _CatchInstanceProxy:
             # This is important for instance methods
             bound_method = attr.__get__(obj, obj.__class__) if hasattr(attr, "__get__") else attr  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType, reportAttributeAccessIssue]
             return catch(exceptions, map_to=map_to)(bound_method)  # pyright: ignore[reportUnknownArgumentType]
-        return None
+        return attr
 
     def __repr__(self) -> str:
         obj = object.__getattribute__(self, "_obj")
